@@ -12,6 +12,8 @@ void DHT::setup() {
   this->pin_->digital_write(true);
   this->pin_->setup();
   this->pin_->digital_write(true);
+  _count = 0;  //experiment
+  rampUp = true;
 }
 void DHT::dump_config() {
   ESP_LOGCONFIG(TAG, "DHT:");
@@ -72,6 +74,24 @@ void DHT::set_dht_model(DHTModel model) {
   this->is_auto_detect_ = model == DHT_MODEL_AUTO_DETECT;
 }
 bool HOT ICACHE_RAM_ATTR DHT::read_sensor_(float *temperature, float *humidity, bool report_errors) {
+    
+    // Start delay experiment
+    if (rampUp) {
+      _count++;
+      }
+    else {
+        _count--;  
+      }
+    if (_count > 191) {
+        rampUp = false;
+    }
+    if (_count == 0) {
+        rampUp = true;
+    }
+    
+    uint16_t startDelay = 800 + _count * 100;
+    ESP_LOGD(TAG, "Using start delay %d", startDelay);
+    
   *humidity = NAN;
   *temperature = NAN;
 
@@ -95,7 +115,7 @@ bool HOT ICACHE_RAM_ATTR DHT::read_sensor_(float *temperature, float *humidity, 
     } else if (this->model_ == DHT_MODEL_DHT22_TYPE2) {
       delayMicroseconds(2000);
     } else if (this->model_ == DHT_MODEL_AM2302) {
-      delayMicroseconds(1000);
+      delayMicroseconds(startDelay);
     } else {
       delayMicroseconds(800);
     }

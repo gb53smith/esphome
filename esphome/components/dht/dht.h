@@ -50,6 +50,9 @@ class DHT : public PollingComponent {
 
  protected:
   bool read_sensor_(float *temperature, float *humidity, bool report_errors);
+  
+  uint16_t _count; // Used to sweep start delay in an experiment only.
+  bool rampUp;
 
   GPIOPin *pin_;
   DHTModel model_{DHT_MODEL_AUTO_DETECT};
