@@ -1,6 +1,10 @@
 #include "dht.h"
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
+/*
+bool DHT::read(bool force) copied from
+Platformio library: "diaoul/DHTNew @ 1.0.0"
+*/
 
 namespace esphome {
 namespace dht {
@@ -12,6 +16,8 @@ void DHT::setup() {
   this->pin_->digital_write(true);
   this->pin_->setup();
   this->pin_->digital_write(true);
+  _count = 0;  //experiment
+  rampUp = true;
 }
 void DHT::dump_config() {
   ESP_LOGCONFIG(TAG, "DHT:");
@@ -31,26 +37,26 @@ void DHT::dump_config() {
 }
 
 void DHT::update() {
-  float temperature, humidity;
+
   bool success;
   if (this->model_ == DHT_MODEL_AUTO_DETECT) {
     this->model_ = DHT_MODEL_DHT22;
-    success = this->read_sensor_(&temperature, &humidity, false);
+    success = this->read(false);
     if (!success) {
       this->model_ = DHT_MODEL_DHT11;
       return;
     }
   } else {
-    success = this->read_sensor_(&temperature, &humidity, true);
+    success = this->read(false);
   }
 
   if (success) {
-    ESP_LOGD(TAG, "Got Temperature=%.1f°C Humidity=%.1f%%", temperature, humidity);
+    ESP_LOGD(TAG, "Got Temperature=%.1f°C Humidity=%.1f%%", _temperature, _humidity);
 
     if (this->temperature_sensor_ != nullptr)
-      this->temperature_sensor_->publish_state(temperature);
+      this->temperature_sensor_->publish_state(_temperature);
     if (this->humidity_sensor_ != nullptr)
-      this->humidity_sensor_->publish_state(humidity);
+      this->humidity_sensor_->publish_state(_humidity);
     this->status_clear_warning();
   } else {
     const char *str = "";
@@ -67,10 +73,12 @@ void DHT::update() {
 }
 
 float DHT::get_setup_priority() const { return setup_priority::DATA; }
-void DHT::set_dht_model(DHTModel model) {
+ void DHT::set_dht_model(DHTModel model) {
   this->model_ = model;
   this->is_auto_detect_ = model == DHT_MODEL_AUTO_DETECT;
-}
+} 
+
+/*
 bool HOT ICACHE_RAM_ATTR DHT::read_sensor_(float *temperature, float *humidity, bool report_errors) {
   *humidity = NAN;
   *temperature = NAN;
@@ -236,6 +244,115 @@ bool HOT ICACHE_RAM_ATTR DHT::read_sensor_(float *temperature, float *humidity, 
   }
 
   return true;
+}
+*/
+
+// Returns true if a reading attempt was made (successful or not)
+bool DHT::read(bool force) {
+    
+    // Start delay experiment
+    if (rampUp) {
+      _count++;
+      }
+    else {
+        _count--;  
+      }
+    if (_count > 191) {
+        rampUp = false;
+    }
+    if (_count == 0) {
+        rampUp = true;
+    }
+    
+    uint16_t startDelay = 800 + _count * 100;
+    ESP_LOGD(TAG, "Using start delay %d", startDelay);
+
+    const uint8_t dht_pin = this->pin_->get_pin();
+    // don't read more than every getMinimumSamplingPeriod() milliseconds
+    unsigned long currentTime = millis();
+    if (!force && ((currentTime - _lastReadTime) < getMinimumSamplingPeriod())) {
+        return false;
+    }
+
+    // reset lastReadTime, temperature and humidity
+    _lastReadTime = currentTime;
+    _temperature = NAN;
+    _humidity = NAN;
+
+    // send start signal
+    this->pin_->pin_mode(OUTPUT);
+    this->pin_->digital_write(false);
+    //pinMode(_pin, OUTPUT);
+    //digitalWrite(_pin, LOW);
+    if (_model == DHT_MODEL_DHT11)
+        delay(18); // [18-20]ms
+    else
+        delayMicroseconds(800); // [0.8-20]ms
+
+    // init data
+    uint8_t data[5] = {0};
+
+    // begin of time critical code
+    noInterrupts();
+
+    // start reading the data line
+    this->pin_->pin_mode(INPUT_PULLUP);
+    //pinMode(_pin, INPUT_PULLUP);
+    delayMicroseconds(20);  // [20-200]us
+
+    // 80us low time + 80us high time + 10us error margin
+    if (!pulseIn(dht_pin, HIGH, 170)) {
+        _error = DHT_ERROR_TIMEOUT_START;
+        interrupts();
+        return true;
+    }
+
+    // read the 40 bits (5 bytes) of data
+    for (uint8_t i = 0; i < sizeof(data) * 8; i++) {
+        // 50us low time + [26-70]us high time + 10us error margin
+        uint8_t pulse = pulseIn(dht_pin, HIGH, 150);
+
+        if (!pulse) {
+            _error = DHT_ERROR_TIMEOUT_DATA;
+            interrupts();
+            return true;
+        }
+
+        data[i/8] <<= 1;
+        if (pulse > 50)  // this is a 1
+            data[i/8] |= 1;
+    }
+    // end of time critical code
+    interrupts();
+
+    // verify checksum
+    if (data[4] != ((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
+        _error = DHT_ERROR_CHECKSUM;
+        return true;
+    }
+
+    // we made it
+    _error = DHT_ERROR_NONE;
+
+    // convert data to actual temperature and humidity
+    if (_model == DHT_MODEL_DHT11) {
+        _temperature = data[2];
+        _humidity = data[0];
+    } else {
+        _temperature = data[2] & 0x7F;
+        _temperature *= 256;
+        _temperature += data[3];
+        _temperature *= 0.1;
+        if (data[2] & 0x80) {
+            _temperature *= -1;
+        }
+        _humidity = data[0];
+        _humidity *= 256;
+        _humidity += data[1];
+        _humidity *= 0.1;
+    }
+
+    return true;
 }
 
 }  // namespace dht

@@ -6,15 +6,24 @@
 namespace esphome {
 namespace dht {
 
-enum DHTModel {
+typedef enum DHTModel {
   DHT_MODEL_AUTO_DETECT = 0,
   DHT_MODEL_DHT11,
   DHT_MODEL_DHT22,
+  DHT_MODEL_DHT21,
   DHT_MODEL_AM2302,
   DHT_MODEL_RHT03,
   DHT_MODEL_SI7021,
   DHT_MODEL_DHT22_TYPE2
-};
+} DHTModel_t;
+
+// DHTError_t
+typedef enum {
+    DHT_ERROR_NONE = 0,
+    DHT_ERROR_TIMEOUT_START,
+    DHT_ERROR_TIMEOUT_DATA,
+    DHT_ERROR_CHECKSUM
+} DHTError_t;
 
 /// Component for reading temperature/humidity measurements from DHT11/DHT22 sensors.
 class DHT : public PollingComponent {
@@ -47,15 +56,27 @@ class DHT : public PollingComponent {
   void update() override;
   /// HARDWARE_LATE setup priority.
   float get_setup_priority() const override;
+  int getMinimumSamplingPeriod() {return _model == DHT_MODEL_DHT11 ? 1000 : 2000;}
 
  protected:
-  bool read_sensor_(float *temperature, float *humidity, bool report_errors);
+  //bool read_sensor_(float *temperature, float *humidity, bool report_errors);
+  bool read(bool force);
 
   GPIOPin *pin_;
   DHTModel model_{DHT_MODEL_AUTO_DETECT};
   bool is_auto_detect_{false};
   sensor::Sensor *temperature_sensor_{nullptr};
   sensor::Sensor *humidity_sensor_{nullptr};
+ 
+  uint16_t _count; // Used to sweep start delay in an experiment only.
+  bool rampUp;
+  float _temperature;
+  float _humidity;
+
+ private:
+  DHTModel_t _model;
+  DHTError_t _error;
+  unsigned long _lastReadTime;
 };
 
 }  // namespace dht
