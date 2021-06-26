@@ -6,10 +6,6 @@
 /*
 Using Platformio library: "diaoul/DHTNew @ 1.0.0"
 */
-// Prevent conflict with reused class name
-//namespace dhtnew {
-
-//}
 
 const uint8_t dhtPin = 2;
 DHTModel_t myDHTModel = DHT_MODEL_DHT22;
@@ -60,35 +56,18 @@ void DHT::dump_config() {
 
 void DHT::update() {
 
-  bool success;
-  /*
-  if (this->model_ == DHT_MODEL_AUTO_DETECT) {
-    this->model_ = DHT_MODEL_DHT22;
-    success = this->read(false);
-    if (!success) {
-      this->model_ = DHT_MODEL_DHT11;
-      return;
-    }
-  } else {
-    success = this->read(false);
-  }
-  */
-   success = this->read(false);
+  const char *errorString = this->readSensor();
+  const char *success = "none";
 
-  if (success) {
+  if (strcmp(errorString, success) == 0) {
     ESP_LOGD(TAG, "Got Temperature=%.1f°C Humidity=%.1f%%", _temperature, _humidity);
-
     if (this->temperature_sensor_ != nullptr)
       this->temperature_sensor_->publish_state(_temperature);
     if (this->humidity_sensor_ != nullptr)
       this->humidity_sensor_->publish_state(_humidity);
     this->status_clear_warning();
   } else {
-    const char *str = "";
-    if (this->is_auto_detect_) {
-      str = " and consider manually specifying the DHT model using the model option";
-    }
-    ESP_LOGW(TAG, "Invalid readings! Please check your wiring (pull-up resistor, pin number)%s.", str);
+      ESP_LOGD(TAG, "Got this DHT error: %s.", errorString);
     if (this->temperature_sensor_ != nullptr)
       this->temperature_sensor_->publish_state(NAN);
     if (this->humidity_sensor_ != nullptr)
@@ -104,13 +83,14 @@ float DHT::get_setup_priority() const { return setup_priority::DATA; }
 } 
 
 
-// Returns true if a reading attempt was made (successful or not)
-bool DHT::read(bool force) {
+//Read sensor and return error message;
+const char* DHT::readSensor() {
     
     // don't read more than every getMinimumSamplingPeriod() milliseconds
+    // The DHTNew library just blocks the read without a error message type.
     unsigned long currentTime = millis();
-    if (!force && ((currentTime - _lastReadTime) < getMinimumSamplingPeriod())) {
-        return false;
+    if ((currentTime - _lastReadTime) < getMinimumSamplingPeriod()) {
+        return "Increase_sample_period";
     }
 
     // reset lastReadTime, temperature and humidity
@@ -122,8 +102,9 @@ bool DHT::read(bool force) {
    
     _humidity = dhtnew.readHumidity();
     
-
-    return true;
+    const char* errorString = dhtnew.getErrorString();
+    
+    return errorString;
 }
 
 }  // namespace dht

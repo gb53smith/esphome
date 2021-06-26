@@ -67,8 +67,8 @@ class DHT : public PollingComponent {
 
 
  protected:
-  //bool read_sensor_(float *temperature, float *humidity, bool report_errors);
-  bool read(bool force);
+  //Read sensor and return error message;
+  const char* readSensor();
 
   GPIOPin *pin_;
   DHTModel_t model_{DHT_MODEL_DHT22};
