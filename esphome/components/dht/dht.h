@@ -1,57 +1,19 @@
 #pragma once
 
 #include "esphome/core/component.h"
+// #include "esphome/core/esphal.h"  get_pin found here
 #include "esphome/components/sensor/sensor.h"
 #include "DHTNew.h"
 
 namespace esphome {
 namespace dht {
 
-//To prevent conflicts use DHTModel_t type in DHTNew.h
-/*
-typedef enum DHTModel {
-  DHT_MODEL_AUTO_DETECT = 0,
-  DHT_MODEL_DHT11,
-  DHT_MODEL_DHT22,
-  DHT_MODEL_DHT21,
-  DHT_MODEL_AM2302,
-  DHT_MODEL_RHT03,
-  DHT_MODEL_SI7021,
-  DHT_MODEL_DHT22_TYPE2
-};
-*/
-
-/*
-// DHTError_t
-typedef enum {
-    DHT_ERROR_NONE = 0,
-    DHT_ERROR_TIMEOUT_START,
-    DHT_ERROR_TIMEOUT_DATA,
-    DHT_ERROR_CHECKSUM
-} DHTError_t;
-*/
-
 /// Component for reading temperature/humidity measurements from DHT11/DHT22 sensors.
 class DHT : public PollingComponent {
  public:
-  /** Manually select the DHT model.
-   *
-   * Valid values are:
-   *
-   *  - DHT_MODEL_AUTO_DETECT (default)
-   *  - DHT_MODEL_DHT11
-   *  - DHT_MODEL_DHT22
-   *  - DHT_MODEL_AM2302
-   *  - DHT_MODEL_RHT03
-   *  - DHT_MODEL_SI7021
-   *  - DHT_MODEL_DHT22_TYPE2
-   *
-   * @param model The DHT model.
-   */
+  void set_pin(GPIOPin *pin) { dhtPin_ = pin->get_pin(); }
   void set_dht_model(DHTModel_t model);
-
-  void set_pin(GPIOPin *pin) { pin_ = pin; }
-  void set_model(DHTModel_t model) { model_ = model; }
+  //void set_model(DHTModel_t model) { model_ = model; }
   void set_temperature_sensor(sensor::Sensor *temperature_sensor) { temperature_sensor_ = temperature_sensor; }
   void set_humidity_sensor(sensor::Sensor *humidity_sensor) { humidity_sensor_ = humidity_sensor; }
 
@@ -64,17 +26,23 @@ class DHT : public PollingComponent {
   float get_setup_priority() const override;
   int getMinimumSamplingPeriod() {return _model == DHT_MODEL_DHT11 ? 1000 : 2000;}
 
-
-
  protected:
   //Read sensor and return error message;
   const char* readSensor();
 
-  GPIOPin *pin_;
-  DHTModel_t model_{DHT_MODEL_DHT22};
-  bool is_auto_detect_{false};
+  uint8_t dhtPin_;
+  
+  //DHTModel_t model_{DHT_MODEL_DHT11};
+  DHTModel_t model_{};
+  //bool is_auto_detect_{false};
   sensor::Sensor *temperature_sensor_{nullptr};
   sensor::Sensor *humidity_sensor_{nullptr};
+
+  //Object from DHTNew library
+  const uint8_t tmpPin = dhtPin_;  // Attempted conversion to const uint8_t for dhtnew
+  // This creates the dhtnew object when the dht class is constructed so pin and model
+  // is not available until set_pin and set_dht_model methods are called.
+  ::DHT dhtnew{2, DHT_MODEL_DHT22};
 
  
   float _temperature;
