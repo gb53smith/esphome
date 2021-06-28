@@ -53,10 +53,9 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-#Removed since dntnew cannot be created inside dht class with passed parameters
-    #pin = await gpio_pin_expression(config[CONF_PIN])
-    
-    #cg.add(var.set_pin(pin))
+
+    pin = await gpio_pin_expression(config[CONF_PIN])
+    cg.add(var.set_pin(pin))
 
     if CONF_TEMPERATURE in config:
         sens = await sensor.new_sensor(config[CONF_TEMPERATURE])
@@ -65,4 +64,4 @@ async def to_code(config):
         sens = await sensor.new_sensor(config[CONF_HUMIDITY])
         cg.add(var.set_humidity_sensor(sens))
 
-    #cg.add(var.set_dht_model(config[CONF_MODEL]))
+    cg.add(var.set_dht_model(config[CONF_MODEL]))
