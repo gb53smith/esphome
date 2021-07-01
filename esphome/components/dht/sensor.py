@@ -65,3 +65,4 @@ async def to_code(config):
         cg.add(var.set_humidity_sensor(sens))
 
     cg.add(var.set_dht_model(config[CONF_MODEL]))
+    cg.add_library("diaoul/DHTNew", "1.0.0")
