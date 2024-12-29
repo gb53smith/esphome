@@ -17,12 +17,14 @@ wifi:
     subnet: 255.255.255.0
 
 ota:
-  password: !secret ota_password
+  - platform: esphome
+    password: !secret ota_password
 
 # Enable Home Assistant API
 api:
-  password: !secret ota_password
-  
+  encryption:
+   key: !secret api_encryption_key
+     
 binary_sensor:
   - platform: gpio
     name: "Rssi button"
@@ -47,3 +49,19 @@ status_led:
   pin:
     number: GPIO2
     inverted: yes
+
+i2c:
+  scan: true
+
+sensor:
+  - platform: bme280_i2c
+    temperature:
+      name: "BME280 Temperature"
+      oversampling: 16x
+    pressure:
+      name: "BME280 Pressure"
+    humidity:
+      name: "BME280 Humidity"
+    address: 0x77
+    update_interval: 60s
+

@@ -1,0 +1,211 @@
+esphome:
+  name: tides
+  friendly_name: Tide Pump Controller
+
+esp8266:
+  board: d1_mini
+
+# Test of pump controller that turns ON the pump when predicted tide
+# is above "tide_min"
+
+# Enable logging
+logger:
+  level: debug
+
+# Temporary WiFi connect for debug.  Open on PC URL = tides.local/
+wifi:
+  ssid: "GreenMountain"
+  password: !secret wifi_password
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+# Define global variables to store time values
+# Need two start times and two stop times per day
+# These need to be set from a lookup array for the day at midnight.
+# OK to use globals for tide table since there is 8 MB of RAM available 
+# on a ESP32-S3 N16R8
+globals:
+  - id: target_hour_start
+    type: int
+    restore_value: no
+    initial_value: '15'  # Default hour
+  - id: target_minute_start
+    type: int
+    restore_value: no
+    initial_value: '7'  # Default minute
+  - id: target_hour_stop
+    type: int
+    restore_value: no
+    initial_value: '15'  # Default hour
+  - id: target_minute_stop
+    type: int
+    restore_value: no
+    initial_value: '9'  # Default minute
+  - id: TIDE_TABLE
+    <<: !include .tide_table.yaml
+  - id: dayAddress
+    type: int
+  - id: height
+    type: int
+    initial_value: '60'
+  - id: min_height
+    type: int
+    initial_value: '60'
+
+
+# Time component to get the current time from an NTP server 
+# Need to add a RTC so that above WiFi connection can be removed
+# calculate dayAddress 10 seconds after midnight when month and day may change.
+time:
+  - platform: sntp 
+    id: sntp_time
+    on_time:
+      - seconds: 1
+        minutes: /1
+        then:
+          - lambda: |-
+              auto now = id(sntp_time).now();
+              int dayMinute = now.hour * 60 + now.minute;
+              bool direction = false;
+              int dir = 0;
+              int t0 = 0;
+              int h0 = 0;
+              int t1 = 0;
+              int h1 = 0;
+              uint8_t byte1 = 0;
+              uint8_t byte2 = 0;
+              float tcross = 0;
+              int icross = 0;
+              float m = 0.1;
+              float b = 0.2;
+              for (int i = 0; i < 6; i++) {             
+                direction = false;
+                byte1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 3];
+                byte2 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 2];
+                t1 = (byte1 << 8) | byte2;
+                h1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 1] - 10;
+                if (i == 5) {
+                  t1 += 1440;
+                }
+                if (i > 0) {
+                  t1 += 1440;
+                  
+                  if (t0 == t1) {
+                    tcross = 0;
+                    direction = false;
+                  } else if (h0 == h1) {
+                    if (h0 > id(min_height)) {
+                      direction = true;
+                      tcross = t0;
+                    }
+                  } else {
+                      m = float(h1 - h0) / float(t1 - t0);
+                      b = float(h0) - m * float(t0);
+                      //ESP_LOGD("main", "Loop: %d %d %d %d %d %.4f %.4f", i, t1, h1, t0, h0, m, b);
+                      tcross = (float(id(min_height)) - b) / m;
+                  }
+                  //icross = static_cast<int>(tcross);
+                  //ESP_LOGD("main", "Loop: %d %d %d %d %d %.2f %d", i, t1, h1, t0, h0, tcross, icross);
+                  if (tcross < 1440 or tcross > 2880) {
+                    tcross = 0;
+                    direction = false;
+                  }
+                  if (tcross >= t0 or tcross <= t1) {
+                    if (h0 > id(min_height) and h1 > id(min_height)) {
+                      tcross = t0;
+                      direction = true;
+                    }
+                    if (m > 0) {
+                      direction = true;
+                    }
+                  }
+                  icross = static_cast<int>(tcross);
+                  if (dayMinute == icross - 1440) {
+                    if (direction) {
+                      id(hp_pump).turn_on();
+                    }
+                    else {
+                      id(hp_pump).turn_off();
+                    }
+                  }
+                  if (dayMinute == t0 - 1440) {
+                    id(height) = h0;
+                  }
+                  if (direction){
+                    dir = 1;
+                  } else {
+                    dir = 0;
+                  }    
+                  ESP_LOGD("main", "Loop: %d %d %d %d %d %d %d %d",id(dayAddress), i, t1, h1, t0, h0, icross, dir); 
+                }
+                t0 = t1;
+                h0 = h1;
+              }
+      - seconds: 0
+        minutes: /1
+        then:
+          - lambda: |-
+              auto now = id(sntp_time).now();
+              // remove -11 with full tide table
+              int month = now.month - 11;
+              int day = now.day_of_month;
+              int days = 0;
+              int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+              for (int i = 0; i < 12; i++) {
+                if (i == (month - 1) or month == 1) {
+                  break; }
+                days = days + monthSize[i];
+                } 
+              id(dayAddress) = (days + day) * 12;
+              ESP_LOGD("main", "new dayAddress: %d", id(dayAddress));
+
+# dayAddress agrees with desal.py for 12/20
+# monthSize[1] = 29 for a leap year.
+# int combined = (byte1 << 8) | byte2;
+
+# Identify the version on startup
+# and then use for state messages
+
+switch:
+  - platform: gpio
+    name: "HP Pump"
+    id: hp_pump
+    pin:
+      number: GPIO12
+      inverted: True
+
+sensor:
+  - platform: template
+    name: "Tide Height"
+    state_class: measurement
+    unit_of_measurement: "ft"
+    lambda: |-
+      return float(id(height)) / 10;
+
+# Template sensor to trigger action based on the target hour and minutes
+# Always returns 0.  Runs every minute by default
+#sensor:
+#  - platform: template
+#    internal: true
+#    name: "Trigger Time Action"
+#    lambda: |-
+#      auto now = id(sntp_time).now();
+#      if (now.hour == id(target_hour_start) && now.minute == id(target_minute_start)) {
+#        id(hp_pump).turn_on();
+#        ESP_LOGI("time", "Start performed at %s", id(sntp_time).now().strftime("%Y-%m-%d %H:%M:%S").c_str());
+#      }
+#      if (now.hour == id(target_hour_stop) && now.minute == id(target_minute_stop)) {
+#        id(hp_pump).turn_off();
+#        ESP_LOGI("time", "Stop performed at %s", id(sntp_time).now().strftime("%Y-%m-%d %H:%M:%S").c_str());
+#      } 
+#      return 0;
+
+      
+
+

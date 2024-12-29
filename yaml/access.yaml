@@ -1,0 +1,193 @@
+# Example of a private Web Server that can be only accessed using an smart phone.
+# Here connect to Wifi ID "Thetis" then open browser using URL access.local/
+# Demonstrates a pump control with low and high water sensors.
+# Internal state is set with press on low water sensor and cleared with press of high water sensor
+
+# Support is easy.
+# With the ota option of the web_server set to true, the firmware can be compiled from this file
+# and emailed to Thetis for updating.  The email attachment is saved in Files on the iPhone.
+# Under OTA Update on the access.local screen, choose the saved file (access.bin) and touch Update.
+# (The iPhone screen has to be rotated to see the UPDATE button on the far right.)
+
+esphome:
+  name: access
+  friendly_name: Desalination
+
+esp8266:
+  board: d1_mini
+
+# Enable logging
+logger:
+  level: none
+
+# Identify the version on startup
+# and then use for state messages
+text_sensor:
+  - platform: template
+    name: "State"
+    id: message_text
+    web_server:
+      sorting_group_id: sorting_group_message
+# Show version on start up
+    lambda: |-
+      return {"v1.0"};
+
+wifi:
+  ap:
+    ssid: "Thetis"
+    password: "SmiLinCove216"
+
+web_server:
+  port: 80
+  version: 3
+  ota: true
+  log: false
+  local: true
+  sorting_groups:
+    - id: sorting_group_message
+      name: "Message"
+      sorting_weight: 10
+    - id: sorting_group_pumps
+      name: "Pumps"
+      sorting_weight: 20
+    - id: sorting_group_levels
+      name: "Levels"
+      sorting_weight: 30
+    - id: sorting_group_other
+      name: "Other"
+      sorting_weight: 40
+
+binary_sensor:
+  - platform: gpio
+    name: "Water Low"
+    pin:
+      number: GPIO13
+      mode: INPUT_PULLUP
+      inverted: True
+    id: set_state
+    web_server:
+      sorting_group_id: sorting_group_levels
+    on_press:
+      then:
+        - binary_sensor.template.publish:
+            id: internal_state
+            state: ON
+        - switch.turn_on: boost_pump
+# Update message when state changes
+        - text_sensor.template.publish:
+            id: message_text
+            state: "Water Low Detected"
+
+  - platform: gpio
+    name: "Water Full"
+    pin:
+      number: GPIO14
+      mode: INPUT_PULLUP
+      inverted: True
+    id: clear_state
+    web_server:
+      sorting_group_id: sorting_group_levels
+    on_press:
+      then:
+        - binary_sensor.template.publish:
+            id: internal_state
+            state: OFF
+        - switch.turn_off: boost_pump
+        - text_sensor.template.publish:
+            id: message_text
+            state: "Water Full Detected"
+
+  - platform: template
+    id: internal_state
+    name: "Internal State"
+    internal: true
+    lambda: |-
+      if (id(internal_state).state) {
+        return true;
+      } else {
+        return false;
+      }
+    on_state:
+      - then:
+          - if:
+              condition:
+                binary_sensor.is_on: internal_state
+              then:
+                - switch.turn_on: hp_pump
+              else:
+                - switch.turn_off: hp_pump
+
+light:
+  - platform: status_led
+    name: "Status LED"
+    id: led_status
+    web_server:
+          sorting_group_id: sorting_group_other
+    pin: 
+      number: GPIO2
+      inverted: True
+
+switch:
+  - platform: gpio
+    name: "HP Pump"
+    id: hp_pump
+    web_server:
+      sorting_group_id: sorting_group_pumps
+    pin:
+      number: GPIO12
+      inverted: True
+  - platform: gpio
+    name: "Boost Pump"
+    id: boost_pump
+    web_server:
+      sorting_group_id: sorting_group_pumps
+    pin: GPIO1
+
+number: 
+  - platform: template 
+    name: "Fill Set Point"
+    id: my_slide
+    web_server:
+      sorting_group_id: sorting_group_other
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 100
+    step: 0.1
+    initial_value: 30
+
+# Required for I2C connected sensors
+i2c:
+  scan: true
+
+# Included as example of analog reading
+# Another sealed temperature sensor would be used instead of the bme_280
+# Note that turning on/off a light is different than a switch
+# Here both the boost pump switch and the LED status light
+#  are turned ON if the temperature exceeds the fill set point.  Just a crazy example to test coding.
+sensor:
+  - platform: bme280_i2c
+    temperature:
+      name: "HP Pump Temperature"
+      oversampling: 16x
+      id: pump_temp
+      web_server:
+        sorting_group_id: sorting_group_other
+      on_value:
+        then:
+          - lambda: |-
+              if (id(pump_temp).state > id(my_slide).state) {
+                id(boost_pump).turn_on();
+                auto call = id(led_status).turn_on();
+                call.perform();
+              } else {
+                id(boost_pump).turn_off();
+                auto call = id(led_status).turn_off();
+                call.perform();
+              }
+    address: 0x77
+    update_interval: 10s
+
+    
+      
+        
