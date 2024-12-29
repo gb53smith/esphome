@@ -31,29 +31,13 @@ ota:
 # OK to use globals for tide table since there is 8 MB of RAM available 
 # on a ESP32-S3 N16R8
 globals:
-  - id: target_hour_start
-    type: int
-    restore_value: no
-    initial_value: '15'  # Default hour
-  - id: target_minute_start
-    type: int
-    restore_value: no
-    initial_value: '7'  # Default minute
-  - id: target_hour_stop
-    type: int
-    restore_value: no
-    initial_value: '15'  # Default hour
-  - id: target_minute_stop
-    type: int
-    restore_value: no
-    initial_value: '9'  # Default minute
   - id: TIDE_TABLE
-    <<: !include .tide_table.yaml
+    <<: !include .tide_table_jan.yaml
   - id: dayAddress
     type: int
   - id: height
     type: int
-    initial_value: '60'
+    restore_value: yes
   - id: min_height
     type: int
     initial_value: '60'
@@ -71,6 +55,16 @@ time:
         then:
           - lambda: |-
               auto now = id(sntp_time).now();
+              int month = now.month - 11;
+              int day = now.day_of_month;
+              int days = 0;
+              int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+              for (int i = 0; i < 12; i++) {
+                if (i == (month - 1) or month == 1) {
+                  break; }
+                days = days + monthSize[i];
+                } 
+              id(dayAddress) = (days + day) * 12;
               int dayMinute = now.hour * 60 + now.minute;
               bool direction = false;
               int dir = 0;
@@ -147,23 +141,6 @@ time:
                 t0 = t1;
                 h0 = h1;
               }
-      - seconds: 0
-        minutes: /1
-        then:
-          - lambda: |-
-              auto now = id(sntp_time).now();
-              // remove -11 with full tide table
-              int month = now.month - 11;
-              int day = now.day_of_month;
-              int days = 0;
-              int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
-              for (int i = 0; i < 12; i++) {
-                if (i == (month - 1) or month == 1) {
-                  break; }
-                days = days + monthSize[i];
-                } 
-              id(dayAddress) = (days + day) * 12;
-              ESP_LOGD("main", "new dayAddress: %d", id(dayAddress));
 
 # dayAddress agrees with desal.py for 12/20
 # monthSize[1] = 29 for a leap year.
@@ -187,24 +164,6 @@ sensor:
     unit_of_measurement: "ft"
     lambda: |-
       return float(id(height)) / 10;
-
-# Template sensor to trigger action based on the target hour and minutes
-# Always returns 0.  Runs every minute by default
-#sensor:
-#  - platform: template
-#    internal: true
-#    name: "Trigger Time Action"
-#    lambda: |-
-#      auto now = id(sntp_time).now();
-#      if (now.hour == id(target_hour_start) && now.minute == id(target_minute_start)) {
-#        id(hp_pump).turn_on();
-#        ESP_LOGI("time", "Start performed at %s", id(sntp_time).now().strftime("%Y-%m-%d %H:%M:%S").c_str());
-#      }
-#      if (now.hour == id(target_hour_stop) && now.minute == id(target_minute_stop)) {
-#        id(hp_pump).turn_off();
-#        ESP_LOGI("time", "Stop performed at %s", id(sntp_time).now().strftime("%Y-%m-%d %H:%M:%S").c_str());
-#      } 
-#      return 0;
 
       
 
