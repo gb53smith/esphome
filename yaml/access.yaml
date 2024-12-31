@@ -15,22 +15,19 @@ esphome:
 
 esp8266:
   board: d1_mini
+  restore_from_flash: True
 
 # Enable logging
 logger:
-  level: none
+  level: debug
 
-# Identify the version on startup
-# and then use for state messages
-text_sensor:
-  - platform: template
-    name: "State"
-    id: message_text
-    web_server:
-      sorting_group_id: sorting_group_message
-# Show version on start up
-    lambda: |-
-      return {"v1.0"};
+globals:
+  - id: save_month
+    type: int
+    restore_value: True
+  - id: save_day
+    type: int
+    restore_value: True
 
 wifi:
   ap:
@@ -41,7 +38,7 @@ web_server:
   port: 80
   version: 3
   ota: true
-  log: false
+  log: true
   local: true
   sorting_groups:
     - id: sorting_group_message
@@ -56,6 +53,29 @@ web_server:
     - id: sorting_group_other
       name: "Other"
       sorting_weight: 40
+    - id: sorting_group_timeset
+      name: "Time Set"
+      sorting_weight: 50
+
+# Identify the version on startup
+# and then use for state messages
+text_sensor:
+  - platform: template
+    name: "Status"
+    id: message_text
+    web_server:
+      sorting_group_id: sorting_group_message
+# Show my firmware version
+    lambda: |-
+      return {"v1.0"};
+  - platform: template
+    name: "Time"
+    id: time_text
+    web_server:
+      sorting_group_id: sorting_group_message
+# Show current time
+    lambda: |-
+      return {to_string(id(save_month)) + "/" + to_string(id(save_day)) };
 
 binary_sensor:
   - platform: gpio
@@ -155,6 +175,58 @@ number:
     max_value: 100
     step: 0.1
     initial_value: 30
+  - platform: template 
+    name: "_Month"
+    id: month_slide
+    web_server:
+      sorting_group_id: sorting_group_timeset
+    optimistic: true
+    mode: slider
+    min_value: 1
+    max_value: 12
+    step: 1
+  - platform: template 
+    name: "Day"
+    id: day_slide
+    web_server:
+      sorting_group_id: sorting_group_timeset
+    optimistic: true
+    mode: slider
+    min_value: 1
+    max_value: 31
+    step: 1
+  - platform: template 
+    name: "Hour"
+    id: hour_slide
+    web_server:
+      sorting_group_id: sorting_group_timeset
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 23
+    step: 1
+  - platform: template 
+    name: "Minute"
+    id: minute_slide
+    web_server:
+      sorting_group_id: sorting_group_timeset
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 59
+    step: 1
+
+button:
+  - platform: template
+    name: "Set Time"
+    id: set_time_button
+    web_server:
+      sorting_group_id: sorting_group_timeset
+    on_press:
+      lambda: |-
+        id(save_month) = id(month_slide).state;
+        id(save_day) = id(day_slide).state;
+        id(time_text).publish_state(to_string(id(save_month)) + "/" + to_string(id(save_day)));
 
 # Required for I2C connected sensors
 i2c:
