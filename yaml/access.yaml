@@ -12,10 +12,25 @@
 esphome:
   name: access
   friendly_name: Desalination
+  on_boot:
+    lambda: |-
+        auto call0 = id(salt_water_level_cal_slide).make_call();
+        call0.set_value(id(salt_water_level_cal));
+        call0.perform();
+        auto call1 = id(fresh_water_level_cal_slide).make_call();
+        call1.set_value(id(fresh_water_level_cal));
+        call1.perform();
+        auto call2 = id(salt_water_level_low_slide).make_call();
+        call2.set_value(id(salt_water_level_low));
+        call2.perform();
+        auto call3 = id(fresh_water_level_low_slide).make_call();
+        call3.set_value(id(fresh_water_level_low));
+        call3.perform();
 
 esp8266:
   board: d1_mini
   restore_from_flash: True
+
 
 # Enable logging
 logger:
@@ -26,6 +41,18 @@ globals:
     type: int
     restore_value: True
   - id: save_day
+    type: int
+    restore_value: True
+  - id: salt_water_level_cal  #Analog voltage time this value = 100 and full tank
+    type: int
+    restore_value: True
+  - id: fresh_water_level_cal
+    type: int
+    restore_value: True
+  - id: salt_water_level_low #Percentage of full tank
+    type: int
+    restore_value: True
+  - id: fresh_water_level_low
     type: int
     restore_value: True
 
@@ -43,20 +70,22 @@ web_server:
   sorting_groups:
     - id: sorting_group_message
       name: "Message"
-      sorting_weight: 10
+      sorting_weight: 1
     - id: sorting_group_pumps
       name: "Pumps"
-      sorting_weight: 20
+      sorting_weight: 3
     - id: sorting_group_levels
       name: "Levels"
-      sorting_weight: 30
+      sorting_weight: 2
     - id: sorting_group_other
       name: "Other"
-      sorting_weight: 40
+      sorting_weight: 4
     - id: sorting_group_timeset
       name: "Time Set"
-      sorting_weight: 50
-
+      sorting_weight: 5
+    - id: sorting_group_config
+      name: "Config"
+      sorting_weight: 6
 # Identify the version on startup
 # and then use for state messages
 text_sensor:
@@ -162,6 +191,18 @@ switch:
     web_server:
       sorting_group_id: sorting_group_pumps
     pin: GPIO1
+  - platform: template
+    name: "Saltwater Enable"
+    id: sw_enable
+    optimistic: True
+    web_server:
+      sorting_group_id: sorting_group_other
+  - platform: template
+    name: "Desal Enable"
+    id: desal_enable
+    optimistic: True
+    web_server:
+      sorting_group_id: sorting_group_other
 
 number: 
   - platform: template 
@@ -215,6 +256,46 @@ number:
     min_value: 0
     max_value: 59
     step: 1
+  - platform: template 
+    name: "SW Level Cal"
+    id: salt_water_level_cal_slide
+    web_server:
+      sorting_group_id: sorting_group_config
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 1000
+    step: 1
+  - platform: template 
+    name: "FW Level Cal"
+    id: fresh_water_level_cal_slide
+    web_server:
+      sorting_group_id: sorting_group_config
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 1000
+    step: 1
+  - platform: template 
+    name: "SW Low Cal"
+    id: salt_water_level_low_slide
+    web_server:
+      sorting_group_id: sorting_group_config
+    optimistic: true
+    mode: slider
+    min_value: 1
+    max_value: 50
+    step: 1
+  - platform: template 
+    name: "FW Low Cal"
+    id: fresh_water_level_low_slide
+    web_server:
+      sorting_group_id: sorting_group_config
+    optimistic: true
+    mode: slider
+    min_value: 1
+    max_value: 50
+    step: 1
 
 button:
   - platform: template
@@ -227,6 +308,17 @@ button:
         id(save_month) = id(month_slide).state;
         id(save_day) = id(day_slide).state;
         id(time_text).publish_state(to_string(id(save_month)) + "/" + to_string(id(save_day)));
+  - platform: template
+    name: "~Save Configuration"
+    id: safe_config
+    web_server:
+      sorting_group_id: sorting_group_config
+    on_press:
+      lambda: |-
+        id(salt_water_level_cal) = id(salt_water_level_cal_slide).state;
+        id(fresh_water_level_cal) = id(fresh_water_level_cal_slide).state;
+        id(salt_water_level_low) = id(salt_water_level_low_slide).state;
+        id(fresh_water_level_low) = id(fresh_water_level_low_slide).state;
 
 # Required for I2C connected sensors
 i2c:
