@@ -1,6 +1,9 @@
 esphome:
   name: tides
   friendly_name: Tide Pump Controller
+  on_boot:
+    lambda: |-
+      id(hp_pump).turn_off();
 
 esp8266:
   board: d1_mini
@@ -35,27 +38,27 @@ globals:
     <<: !include .tide_table_jan.yaml
   - id: dayAddress
     type: int
-  - id: height
-    type: int
-    restore_value: yes
   - id: min_height
     type: int
-    initial_value: '60'
-
+  - id: height
+    type: int
+  - id: rising
+    type: int
 
 # Time component to get the current time from an NTP server 
 # Need to add a RTC so that above WiFi connection can be removed
 # calculate dayAddress 10 seconds after midnight when month and day may change.
+# Calculate tide height every minuute and compare with min_height to change pump state.
 time:
   - platform: sntp 
     id: sntp_time
     on_time:
-      - seconds: 1
+      - seconds: 10
         minutes: /1
         then:
           - lambda: |-
               auto now = id(sntp_time).now();
-              int month = now.month - 11;
+              int month = now.month;
               int day = now.day_of_month;
               int days = 0;
               int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
@@ -66,85 +69,49 @@ time:
                 } 
               id(dayAddress) = (days + day) * 12;
               int dayMinute = now.hour * 60 + now.minute;
-              bool direction = false;
-              int dir = 0;
               int t0 = 0;
               int h0 = 0;
               int t1 = 0;
               int h1 = 0;
               uint8_t byte1 = 0;
               uint8_t byte2 = 0;
-              float tcross = 0;
-              int icross = 0;
+              float tideLevel = 0;
               float m = 0.1;
               float b = 0.2;
+              int dayMinuteShifted = dayMinute + 1440;
+              id(min_height) = id(min_height_num).state * 10;
               for (int i = 0; i < 6; i++) {             
-                direction = false;
                 byte1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 3];
                 byte2 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 2];
                 t1 = (byte1 << 8) | byte2;
                 h1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 1] - 10;
-                if (i == 5) {
+                if (i > 0 and t0 != t1) {
                   t1 += 1440;
-                }
-                if (i > 0) {
-                  t1 += 1440;
-                  
-                  if (t0 == t1) {
-                    tcross = 0;
-                    direction = false;
-                  } else if (h0 == h1) {
-                    if (h0 > id(min_height)) {
-                      direction = true;
-                      tcross = t0;
-                    }
-                  } else {
-                      m = float(h1 - h0) / float(t1 - t0);
-                      b = float(h0) - m * float(t0);
-                      //ESP_LOGD("main", "Loop: %d %d %d %d %d %.4f %.4f", i, t1, h1, t0, h0, m, b);
-                      tcross = (float(id(min_height)) - b) / m;
+                  if (i == 5) {
+                    t1 += 1440;
                   }
-                  //icross = static_cast<int>(tcross);
-                  //ESP_LOGD("main", "Loop: %d %d %d %d %d %.2f %d", i, t1, h1, t0, h0, tcross, icross);
-                  if (tcross < 1440 or tcross > 2880) {
-                    tcross = 0;
-                    direction = false;
-                  }
-                  if (tcross >= t0 or tcross <= t1) {
-                    if (h0 > id(min_height) and h1 > id(min_height)) {
-                      tcross = t0;
-                      direction = true;
-                    }
-                    if (m > 0) {
-                      direction = true;
+                  m = float(h1 - h0) / float(t1 - t0);
+                  b = float(h0) - m * float(t0);
+                  if (dayMinuteShifted >= t0 and dayMinuteShifted < t1) {
+                    tideLevel = m * (dayMinute + 1440) + b;
+                    id(height) = static_cast<int>(tideLevel);
+                    if ( m > 0) {
+                      id(rising) = 1;
+                    } else {
+                      id(rising) = 0;
                     }
                   }
-                  icross = static_cast<int>(tcross);
-                  if (dayMinute == icross - 1440) {
-                    if (direction) {
-                      id(hp_pump).turn_on();
-                    }
-                    else {
-                      id(hp_pump).turn_off();
-                    }
+                  if (id(height) > id(min_height)) {
+                    id(hp_pump).turn_on();
                   }
-                  if (dayMinute == t0 - 1440) {
-                    id(height) = h0;
+                  else {
+                    id(hp_pump).turn_off();
                   }
-                  if (direction){
-                    dir = 1;
-                  } else {
-                    dir = 0;
-                  }    
-                  ESP_LOGD("main", "Loop: %d %d %d %d %d %d %d %d",id(dayAddress), i, t1, h1, t0, h0, icross, dir); 
+                  ESP_LOGD("main", "Loop: %d %d %d %d %d %d %d %d %d",id(dayAddress), i, dayMinute + 1440, t1, h1, t0, h0, id(height), id(rising)); 
                 }
                 t0 = t1;
                 h0 = h1;
               }
-
-# dayAddress agrees with desal.py for 12/20
-# monthSize[1] = 29 for a leap year.
-# int combined = (byte1 << 8) | byte2;
 
 # Identify the version on startup
 # and then use for state messages
@@ -163,8 +130,27 @@ sensor:
     state_class: measurement
     unit_of_measurement: "ft"
     lambda: |-
-      return float(id(height)) / 10;
+      return float(id(height)) / 10;    
+    update_interval: 900s
 
-      
+binary_sensor:
+  - platform: template
+    name: "Tide Direction"
+    lambda: |-
+      if (id(rising) == 1) {
+        return true;
+      } else {
+        return false;
+      }
 
-
+number: 
+  - platform: template 
+    name: "Minimum Height"
+    id: min_height_num
+    unit_of_measurement: ft
+    optimistic: true
+    mode: slider
+    min_value: 4
+    max_value: 10
+    step: 0.11
+    initial_value: 6.0
