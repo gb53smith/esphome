@@ -1,0 +1,401 @@
+esphome:
+  name: desal
+  friendly_name: Desalination Controller
+  platformio_options:
+    board_build.arduino.memory_type: qio_opi
+    board_upload.maximum_ram_size: 524288
+  on_boot:
+    lambda: |-
+      id(hp_pump).turn_off();
+      id(sw_pump).turn_off();
+      id(booster_pump).turn_off();
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  partitions: "/config/esphome/default_16MB.csv"
+  framework:
+    type: arduino
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# Test of pump controller that turns ON the pump when predicted tide
+# is above "tide_min"
+
+# Enable logging
+logger:
+  level: debug
+
+# Temporary WiFi connect for debug.  Open on PC URL = tides.local/
+wifi:
+  ssid: "GreenMountain"
+  password: !secret wifi_password
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+# Define global variables to store time values
+# Need two start times and two stop times per day
+# These need to be set from a lookup array for the day at midnight.
+# OK to use globals for tide table since there is 8 MB of RAM available 
+# on a ESP32-S3 N16R8
+globals:
+#  - id: TIDE_TABLE
+#    <<: !include .tide_table_full.yaml
+  - id: TIDE_TABLE
+    <<: !include .tide_table_jan_jun.yaml
+  - id: TIDE_TABLE2
+    <<: !include .tide_table_jul_dec.yaml
+  - id: dayAddress
+    type: int
+  - id: min_height
+    type: int
+  - id: height
+    type: int
+  - id: rising
+    type: int
+  - id: sw_tank_size
+    type: int
+    initial_value: "1000"
+  - id: fw_tank_size
+    type: int
+    initial_value: "2000"
+
+# Time component to get the current time from an NTP server 
+# Need to add a RTC so that above WiFi connection can be removed
+# calculate dayAddress 10 seconds after midnight when month and day may change.
+# Calculate tide height every minute and compare with min_height to change pump state.
+time:
+  - platform: sntp 
+    id: sntp_time
+    on_time:
+      - seconds: 10
+        minutes: /1
+        then:
+          - lambda: |-
+              auto now = id(sntp_time).now();
+              int month = now.month;
+              int day = now.day_of_month;
+              int days = 0;
+              int year = now.year;
+              int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+              if (((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0)) {
+                int monthSize[12] = {31,29,31,30,31,30,31,31,30,31,30,31};
+              } else {
+                int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+              }
+              for (int i = 0; i < 12; i++) {
+                if (i == (month - 1) or month == 1) {
+                  break; }
+                days = days + monthSize[i];
+                } 
+              id(dayAddress) = (days + day) * 12;
+              int dayMinute = now.hour * 60 + now.minute;
+              int t0 = 0;
+              int h0 = 0;
+              int t1 = 0;
+              int h1 = 0;
+              uint8_t byte1 = 0;
+              uint8_t byte2 = 0;
+              float tideLevel = 0;
+              float m = 0.1;
+              float b = 0.2;
+              int dayMinuteShifted = dayMinute + 1440;
+              id(min_height) = id(min_height_num).state * 10;
+              for (int i = 0; i < 6; i++) {
+                byte1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 3];
+                byte2 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 2];
+                t1 = (byte1 << 8) | byte2;
+                h1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 1] - 10;
+                if (i > 0) {
+                  t1 += 1440;
+                  if (i == 5) {
+                    t1 += 1440;
+                  }
+                  if (t1 != t0) {
+                    m = float(h1 - h0) / float(t1 - t0);
+                    b = float(h0) - m * float(t0);
+                    if (dayMinuteShifted >= t0 and dayMinuteShifted < t1) {
+                      tideLevel = m * (dayMinute + 1440) + b;
+                      id(height) = static_cast<int>(tideLevel);
+                      if ( m > 0) {
+                        id(rising) = 1;
+                      } else {
+                        id(rising) = 0;
+                      }
+                      // Start SW pump if tide is up and level is low.  Keep pumping until full
+                      if (id(height) > id(min_height)) {
+                        if (id(sw_level).state < id(sw_min_level).state and !id(sw_pump).state) {
+                          id(sw_pump).turn_on();
+                        }
+                        if (id(sw_level).state >= id(sw_tank_size)) {
+                          id(sw_pump).turn_off();
+                        }
+                      }
+                      else {
+                        id(sw_pump).turn_off();
+                      }
+                    }
+            
+                    //ESP_LOGD("main", "Loop: %d %d %d %d %d %d %d %d %d",id(dayAddress), i, dayMinute + 1440, t1, h1, t0, h0, id(height), id(rising)); 
+                  }
+                }
+                t0 = t1;
+                h0 = h1;
+              }
+      - seconds: 30
+        minutes: /1
+        then:
+          - lambda: |-
+              int begin_time = millis();
+              int new_level = id(sw_level).state;
+              float float_new_level = id(fw_level).state; 
+              //Using SW Tank
+              if(id(booster_pump).state){
+                new_level = new_level - id(sw_use_rate).state ;
+                //ESP_LOGD("main", "SW New Level: %d", new_level);
+                if (new_level < 0) {
+                  new_level = 0;
+                }
+              }
+              //Filling SW Tank
+              if(id(sw_pump).state){
+                new_level = new_level + id(sw_fill_rate).state;
+                if (new_level > id(sw_tank_size)) {
+                  new_level = id(sw_tank_size);
+                }
+              }
+              if(id(sw_pump).state or id(booster_pump).state) {
+                auto call1 = id(sw_level).make_call();
+                call1.set_value(new_level);
+                call1.perform();
+              }
+              //Filling FW Tank
+              if(id(hp_pump).state){
+                float_new_level = float_new_level + id(sw_use_rate).state * id(ro_recovery).state / 100 ;
+                if (float_new_level > id(fw_tank_size)) {
+                  float_new_level = id(fw_tank_size);
+                } 
+              }
+              //Using FW Tank
+              auto now = id(sntp_time).now();
+              int hour = now.hour;
+              if(hour > id(fw_start_hour).state and hour < id(fw_stop_hour).state) {
+                float_new_level = float_new_level - id(fw_use_rate).state;
+                if (float_new_level < 0) {
+                  float_new_level = 0;
+                }
+              }
+              if((hour > id(fw_start_hour).state and hour < id(fw_stop_hour).state) or id(hp_pump).state) {
+                auto call2 = id(fw_level).make_call();
+                call2.set_value(float_new_level);
+                call2.perform();
+              }
+              //Booster pump control.  Keep after removing above simulation of fill levels
+              if (id(sw_level).state > 1 and id(fw_level).state < id(fw_tank_size) ) {
+                id(start_desal)->execute(id(hp_start_delay).state * 1000); 
+              }
+              else {
+                id(stop_desal)->execute(id(hp_stop_delay).state * 1000); 
+              }
+
+
+
+script:
+  - id: start_desal
+    parameters:
+      delay_ms: int
+    mode: single  # Prevent the `wait` from running multiple times concurrently
+    then:
+      - switch.turn_on: booster_pump
+      - delay: !lambda return delay_ms;
+      - switch.turn_on: hp_pump
+  - id: stop_desal
+    parameters:
+      delay_ms: int
+    mode: single  # Prevent the `wait` from running multiple times concurrently
+    then:
+      - switch.turn_off: hp_pump
+      - delay: !lambda return delay_ms;
+      - switch.turn_off: booster_pump
+
+# Identify the version on startup
+# and then use for state messages
+
+switch:
+  - platform: gpio
+    name: "HP Pump"
+    id: hp_pump
+    pin:
+      number: GPIO16
+      inverted: True
+  - platform: gpio
+    name: "SW Pump"
+    id: sw_pump
+    pin:
+      number: GPIO17
+      inverted: True
+  - platform: gpio
+    name: "Booster Pump"
+    id: booster_pump
+    pin:
+      number: GPIO18
+      inverted: True            
+
+sensor:
+  - platform: template
+    name: "Tide Height"
+    state_class: measurement
+    unit_of_measurement: "ft"
+    lambda: |-
+      return float(id(height)) / 10;    
+    update_interval: 60s
+
+binary_sensor:
+  - platform: template
+    name: "Tide Direction"
+    lambda: |-
+      if (id(rising) == 1) {
+        return true;
+      } else {
+        return false;
+      }
+
+number: 
+  - platform: template 
+    name: "Minimum Height"
+    id: min_height_num
+    unit_of_measurement: ft
+    optimistic: true
+    mode: slider
+    min_value: 1
+    max_value: 10
+    step: 0.11
+    initial_value: 6.0
+  - platform: template 
+    name: "HP Start Delay"
+    id: hp_start_delay
+    unit_of_measurement: sec
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 5
+    step: 1
+    initial_value: 2
+  - platform: template 
+    name: "HP Stop Delay"
+    id: hp_stop_delay
+    unit_of_measurement: sec
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 10
+    step: 1
+    initial_value: 5
+  # Simulation components
+  - platform: template 
+    name: "SW Level"
+    id: sw_level
+    unit_of_measurement: "gal"
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 1000
+    step: 1
+    initial_value: 0
+  - platform: template 
+    name: "FW Level"
+    id: fw_level
+    unit_of_measurement: "gal"
+    optimistic: true
+    mode: slider
+    min_value: 0
+    max_value: 2000
+    step: 1
+    initial_value: 0
+  - platform: template 
+    name: "SW Min Level"
+    id: sw_min_level
+    unit_of_measurement: "gal"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 250
+    step: 1
+    initial_value: 50
+  - platform: template 
+    name: "SW Fill Rate"
+    id: sw_fill_rate
+    unit_of_measurement: "gpm"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 50
+    step: 1
+    initial_value: 35
+  - platform: template 
+    name: "SW Use Rate"
+    id: sw_use_rate
+    unit_of_measurement: "gpm"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 10
+    step: 1
+    initial_value: 5
+  - platform: template 
+    name: "RO Recovery"
+    id: ro_recovery
+    unit_of_measurement: "%"
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 25
+    step: 1
+    initial_value: 15
+  - platform: template 
+    name: "FW Use Rate"
+    id: fw_use_rate
+    unit_of_measurement: "gpm"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 1.0
+    step: 0.01
+    initial_value: 0.47
+  - platform: template 
+    name: "FW Start Hour"
+    id: fw_start_hour
+    unit_of_measurement: "hr"
+    optimistic: true
+    mode: box
+    min_value: 5
+    max_value: 12
+    step: 1
+    initial_value: 8
+  - platform: template 
+    name: "FW Stop Hour"
+    id: fw_stop_hour
+    unit_of_measurement: "hr"
+    optimistic: true
+    mode: box
+    min_value: 13
+    max_value: 23
+    step: 1
+    initial_value: 22
+
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: GPIO48
+    num_leds: 1
+    rmt_channel: 0
+    chipset: sk6812
+    name: "My Light"
