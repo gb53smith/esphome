@@ -4,11 +4,8 @@ esphome:
   platformio_options:
     board_build.arduino.memory_type: qio_opi
     board_upload.maximum_ram_size: 524288
-  on_boot:
-    lambda: |-
-      id(hp_pump).turn_off();
-      id(sw_pump).turn_off();
-      id(booster_pump).turn_off();
+  <<: !include .boot_jan.yaml
+# Use .boot.yaml for full year
 esp32:
   board: esp32-s3-devkitc-1
   variant: esp32s3
@@ -23,6 +20,17 @@ psram:
 
 # Test of pump controller that turns ON the pump when predicted tide
 # is above "tide_min"
+
+# debug:
+  # update_interval: 5s
+
+# text_sensor:
+  # - platform: debug
+    # device:
+      # name: "Device Info"
+    # reset_reason:
+      # name: "Reset Reason"
+
 
 # Enable logging
 logger:
@@ -41,18 +49,10 @@ api:
 ota:
   - platform: esphome
     password: !secret ota_password
-# Define global variables to store time values
-# Need two start times and two stop times per day
-# These need to be set from a lookup array for the day at midnight.
-# OK to use globals for tide table since there is 8 MB of RAM available 
-# on a ESP32-S3 N16R8
+
 globals:
-#  - id: TIDE_TABLE
-#    <<: !include .tide_table_full.yaml
   - id: TIDE_TABLE
-    <<: !include .tide_table_jan_jun.yaml
-  - id: TIDE_TABLE2
-    <<: !include .tide_table_jul_dec.yaml
+    type: std::array<uint8_t, 4416> # Maxiumum for a leap year
   - id: dayAddress
     type: int
   - id: min_height
@@ -143,7 +143,7 @@ time:
                         id(sw_pump).turn_off();
                       }
                     }
-            
+                    //ESP_LOGD("main", "Debug empty %d", id(TIDE_TABLE)[12]);
                     //ESP_LOGD("main", "Loop: %d %d %d %d %d %d %d %d %d",id(dayAddress), i, dayMinute + 1440, t1, h1, t0, h0, id(height), id(rising)); 
                   }
                 }
@@ -206,8 +206,6 @@ time:
                 id(stop_desal)->execute(id(hp_stop_delay).state * 1000); 
               }
 
-
-
 script:
   - id: start_desal
     parameters:
@@ -257,6 +255,15 @@ sensor:
     lambda: |-
       return float(id(height)) / 10;    
     update_interval: 60s
+  # - platform: debug
+    # free:
+      # name: "Heap Free"
+    # block:
+      # name: "Heap Max Block"
+    # loop_time:
+      # name: "Loop Time"
+    # psram:
+      # name: "Free PSRAM"
 
 binary_sensor:
   - platform: template
