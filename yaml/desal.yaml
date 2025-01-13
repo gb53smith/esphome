@@ -55,8 +55,6 @@ globals:
     type: std::array<uint8_t, 4416> # Maxiumum for a leap year
   - id: dayAddress
     type: int
-  - id: min_height
-    type: int
   - id: height
     type: int
   - id: rising
@@ -67,24 +65,34 @@ globals:
   - id: fw_tank_size
     type: int
     initial_value: "2000"
-
+  - id: sw_min_on # Prevent Saltwater pump from short cycling
+    type: int
+    initial_value: "300000"  # Must be ON at least 5 minutes
 # Time component to get the current time from an NTP server 
 # Need to add a RTC so that above WiFi connection can be removed
 # calculate dayAddress 10 seconds after midnight when month and day may change.
 # Calculate tide height every minute and compare with min_height to change pump state.
+i2c:
+  sda: GPIO01
+  scl: GPIO02
+  scan: true
+  id: bus_a
+
 time:
   - platform: sntp 
-    id: sntp_time
+    id: rtc_time
     on_time:
       - seconds: 10
         minutes: /1
         then:
           - lambda: |-
-              auto now = id(sntp_time).now();
+              auto now = id(rtc_time).now();
               int month = now.month;
               int day = now.day_of_month;
               int days = 0;
               int year = now.year;
+              int min_height = id(min_height_num).state * 10;
+              ESP_LOGD("main", "Loop: %d %d %d", month,day,year);
               int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
               if (((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0)) {
                 int monthSize[12] = {31,29,31,30,31,30,31,31,30,31,30,31};
@@ -108,7 +116,6 @@ time:
               float m = 0.1;
               float b = 0.2;
               int dayMinuteShifted = dayMinute + 1440;
-              id(min_height) = id(min_height_num).state * 10;
               for (int i = 0; i < 6; i++) {
                 byte1 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 3];
                 byte2 = id(TIDE_TABLE)[id(dayAddress) + i * 3 - 2];
@@ -130,20 +137,7 @@ time:
                       } else {
                         id(rising) = 0;
                       }
-                      // Start SW pump if tide is up and level is low.  Keep pumping until full
-                      if (id(height) > id(min_height)) {
-                        if (id(sw_level).state < id(sw_min_level).state and !id(sw_pump).state) {
-                          id(sw_pump).turn_on();
-                        }
-                        if (id(sw_level).state >= id(sw_tank_size)) {
-                          id(sw_pump).turn_off();
-                        }
-                      }
-                      else {
-                        id(sw_pump).turn_off();
-                      }
                     }
-                    //ESP_LOGD("main", "Debug empty %d", id(TIDE_TABLE)[12]);
                     //ESP_LOGD("main", "Loop: %d %d %d %d %d %d %d %d %d",id(dayAddress), i, dayMinute + 1440, t1, h1, t0, h0, id(height), id(rising)); 
                   }
                 }
@@ -154,9 +148,29 @@ time:
         minutes: /1
         then:
           - lambda: |-
-              int begin_time = millis();
               int new_level = id(sw_level).state;
-              float float_new_level = id(fw_level).state; 
+              int tmp = 0;
+              int begin_time = 0;
+              int min_height = id(min_height_num).state * 10;
+              float float_new_level = id(fw_level).state;
+              // Start SW pump if tide is up and level is low.  Keep pumping until full
+              if (id(height) > min_height) {
+                if (id(sw_level).state < id(sw_refill_level).state and !id(sw_pump).state) {
+                  begin_time = millis();
+                  //ESP_LOGD("main", "Begin: %d %d",begin_time, id(sw_min_on)); 
+                  id(sw_pump).turn_on();
+                }
+                if ((id(sw_level).state >= id(sw_tank_size)) and id(sw_pump).state and (millis() - begin_time) > id(sw_min_on)) {
+                  id(sw_pump).turn_off();
+                }
+              }
+              else {
+                if ((id(sw_pump).state) and (millis() - begin_time) >= id(sw_min_on)) {
+                  tmp = millis() - begin_time;
+                  //ESP_LOGD("main", "End: %d %d",begin_time, millis());
+                  id(sw_pump).turn_off();
+                }
+              }
               //Using SW Tank
               if(id(booster_pump).state){
                 new_level = new_level - id(sw_use_rate).state ;
@@ -177,15 +191,8 @@ time:
                 call1.set_value(new_level);
                 call1.perform();
               }
-              //Filling FW Tank
-              if(id(hp_pump).state){
-                float_new_level = float_new_level + id(sw_use_rate).state * id(ro_recovery).state / 100 ;
-                if (float_new_level > id(fw_tank_size)) {
-                  float_new_level = id(fw_tank_size);
-                } 
-              }
               //Using FW Tank
-              auto now = id(sntp_time).now();
+              auto now = id(rtc_time).now();
               int hour = now.hour;
               if(hour > id(fw_start_hour).state and hour < id(fw_stop_hour).state) {
                 float_new_level = float_new_level - id(fw_use_rate).state;
@@ -193,18 +200,23 @@ time:
                   float_new_level = 0;
                 }
               }
+              //Filling FW Tank
+              if(id(hp_pump).state){
+                float_new_level = float_new_level + id(sw_use_rate).state * id(ro_recovery).state / 100 ; 
+              }              
               if((hour > id(fw_start_hour).state and hour < id(fw_stop_hour).state) or id(hp_pump).state) {
                 auto call2 = id(fw_level).make_call();
                 call2.set_value(float_new_level);
                 call2.perform();
               }
-              //Booster pump control.  Keep after removing above simulation of fill levels
-              if (id(sw_level).state > 1 and id(fw_level).state < id(fw_tank_size) ) {
-                id(start_desal)->execute(id(hp_start_delay).state * 1000); 
-              }
-              else {
+              // Booster then HP Pump Control
+              if (id(fw_level).state >= id(fw_tank_size) or id(sw_level).state < id(sw_min_level).state) {
                 id(stop_desal)->execute(id(hp_stop_delay).state * 1000); 
               }
+              if (id(fw_level).state < id(fw_min_level).state and id(sw_level).state > id(sw_min_level).state * 2) {
+                id(start_desal)->execute(id(hp_start_delay).state * 1000);
+              }
+
 
 script:
   - id: start_desal
@@ -284,8 +296,9 @@ number:
     mode: slider
     min_value: 1
     max_value: 10
-    step: 0.11
+    step: 0.10
     initial_value: 6.0
+    restore_value: true
   - platform: template 
     name: "HP Start Delay"
     id: hp_start_delay
@@ -295,7 +308,8 @@ number:
     min_value: 1
     max_value: 5
     step: 1
-    initial_value: 2
+    initial_value: 5
+    restore_value: true
   - platform: template 
     name: "HP Stop Delay"
     id: hp_stop_delay
@@ -306,6 +320,40 @@ number:
     max_value: 10
     step: 1
     initial_value: 5
+    restore_value: true
+  - platform: template 
+    name: "SW Min Level"
+    id: sw_min_level
+    unit_of_measurement: "gal"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 250
+    step: 1
+    initial_value: 100
+    restore_value: true
+  - platform: template 
+    name: "SW Refill Level"
+    id: sw_refill_level
+    unit_of_measurement: "gal"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 900
+    step: 1
+    initial_value: 600
+    restore_value: true
+  - platform: template 
+    name: "FW Min Level"
+    id: fw_min_level
+    unit_of_measurement: "gal"
+    optimistic: true
+    mode: box
+    min_value: 800
+    max_value: 1000
+    step: 1
+    initial_value: 950
+    restore_value: true
   # Simulation components
   - platform: template 
     name: "SW Level"
@@ -327,16 +375,6 @@ number:
     max_value: 2000
     step: 1
     initial_value: 0
-  - platform: template 
-    name: "SW Min Level"
-    id: sw_min_level
-    unit_of_measurement: "gal"
-    optimistic: true
-    mode: box
-    min_value: 0
-    max_value: 250
-    step: 1
-    initial_value: 50
   - platform: template 
     name: "SW Fill Rate"
     id: sw_fill_rate
