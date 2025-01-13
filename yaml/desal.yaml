@@ -18,19 +18,10 @@ psram:
   mode: octal
   speed: 80MHz
 
-# Test of pump controller that turns ON the pump when predicted tide
-# is above "tide_min"
-
-# debug:
-  # update_interval: 5s
-
-# text_sensor:
-  # - platform: debug
-    # device:
-      # name: "Device Info"
-    # reset_reason:
-      # name: "Reset Reason"
-
+external_components:
+  - source: github://pr#7621
+    refresh: 30s
+    components: [ time ]
 
 # Enable logging
 logger:
@@ -79,7 +70,7 @@ i2c:
   id: bus_a
 
 time:
-  - platform: sntp 
+  - platform: ds1307 
     id: rtc_time
     on_time:
       - seconds: 10
@@ -267,15 +258,6 @@ sensor:
     lambda: |-
       return float(id(height)) / 10;    
     update_interval: 60s
-  # - platform: debug
-    # free:
-      # name: "Heap Free"
-    # block:
-      # name: "Heap Max Block"
-    # loop_time:
-      # name: "Loop Time"
-    # psram:
-      # name: "Free PSRAM"
 
 binary_sensor:
   - platform: template
@@ -354,6 +336,53 @@ number:
     step: 1
     initial_value: 950
     restore_value: true
+  # Set Date Times
+  - platform: template 
+    name: "Year"
+    id: dt_year
+    optimistic: true
+    mode: box
+    min_value: 2025
+    max_value: 2100
+    step: 1
+    initial_value: 2025
+    restore_value: true
+  - platform: template 
+    name: "Month"
+    id: dt_month
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 12
+    step: 1
+    initial_value: 1
+  - platform: template 
+    name: "Day"
+    id: dt_day
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 31
+    step: 1
+    initial_value: 1
+  - platform: template 
+    name: "Hour"
+    id: dt_hour
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 23
+    step: 1
+    initial_value: 12
+  - platform: template 
+    name: "Minute"
+    id: dt_minute
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 59
+    step: 1
+    initial_value: 0
   # Simulation components
   - platform: template 
     name: "SW Level"
@@ -444,3 +473,27 @@ light:
     rmt_channel: 0
     chipset: sk6812
     name: "My Light"
+
+text_sensor:
+  - platform: template
+    name: "Date/Time"
+    id: current_time
+    lambda: |-
+      auto time = id(rtc_time).now();
+      return time.strftime("%Y-%m-%d / %H:%M");
+
+button:
+  - platform: template
+    name: "Set Time"
+    id: set_time_button
+    on_press:
+      lambda: |-
+        ESP_LOGD("main", "Button Pressed");
+        int year = id(dt_year).state;
+        int month = id(dt_month).state;
+        int day = id(dt_day).state;
+        int hour = id(dt_hour).state;
+        int minute = id(dt_minute).state;
+        id(rtc_time).set_time(year, month, day, hour, minute, 0);
+        auto time = id(rtc_time).now();
+        id(current_time).publish_state(time.strftime("%Y-%m-%d / %H:%M"));
