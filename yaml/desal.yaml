@@ -13,15 +13,9 @@ esp32:
   partitions: "/config/esphome/default_16MB.csv"
   framework:
     type: arduino
-
 psram:
   mode: octal
   speed: 80MHz
-
-#external_components:
-#  - source: github://pr#7621
-#    refresh: never
-#    components: [ time ]
 
 # Enable logging
 logger:
@@ -106,9 +100,9 @@ i2c:
   scan: true
   id: bus_a
 
-i2c_device:
-  id: a24c32
-  address: 0x57
+#i2c_device:
+# id: a24c32
+# address: 0x57
 
 time:
   - platform: ds1307 
@@ -599,10 +593,6 @@ button:
             int hour = id(dt_hour).state;
             int tmp;
             int minute = id(dt_minute).state;
-            //id(rtc_time).set_time(year, month, day, hour, minute, 0);
-            //auto time = id(rtc_time).now();
-            //id(current_time).publish_state(time.strftime("%Y-%m-%d / %H:%M"));
-            // set_time experiment
             year = (year - 2000) / 10 * 16 + ((year - 2000) % 10);
             month = month / 10 * 16 + (month % 10);
             day = day / 10 * 16 + (day % 10);
@@ -623,100 +613,48 @@ button:
         - lambda: |-
             auto time = id(rtc_time).now();
             id(current_time).publish_state(time.strftime("%Y-%m-%d / %H:%M"));
+  - platform: template
+    name: "Water Meter"
+    id: water_meter_button
+    web_server:
+      sorting_group_id: sorting_group_settime
+    on_press:
+      then:
+        - lambda: !lambda |-
+            int value = 123456789;
+            int value2 = 0;
+            uint8_t bytes[4];
+            bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
+            bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
+            bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
+            bytes[3] = value & 0xFF;
+            uint8_t deviceAddress = 0x57; // Device address
+            // Write data
+            Wire.beginTransmission(0x57);
+            Wire.write(0);  // Start at bank 0
+            Wire.write(10);  // Start at register 10 decimal ( up 255 within bank)
+            for (int i = 0; i < 4; i++) {
+             Wire.write(bytes[i]);
+            }
+            Wire.endTransmission();
+            //Reading back
+            delay(5); // Must wait for write operation to complete
+            Wire.beginTransmission(0x57);
+            Wire.write(0);  // Start at bank 0
+            Wire.write(10);  // Start at register 10 decimal ( up 255 within bank)
+            Wire.endTransmission();
+            if (Wire.requestFrom(0x57, 4) != 4) {
+             ESP_LOGD("DS3231", "Failed to read registers");   
+            }
+            else {
+              for (int i = 0; i < 4; i++) {
+                bytes[i] = Wire.read();
+              }
+              value2 = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+              //ESP_LOGD("DS3231", "Data0 %u Data1 %u Data2 %u Data3 %u", data0,data1,data2,data3);
+              ESP_LOGD("DS3231", "Value %d Value2 %d", value, value2);
+            }
 
-# custom_component:
-  # - lambda: |-
-      # class DS3231Component : public PollingComponent {
-       # public:
-        # DS3231Component(esphome::time::RealTimeClock *rtc) : PollingComponent(10000), rtc_(rtc) {}
-
-        # void setup() override {
-          # if (!Wire.requestFrom(0x68, 1)) {
-            # ESP_LOGE("DS3231", "RTC not found at I2C address 0x68");
-            # return;
-          # }
-          # ESP_LOGI("DS3231", "RTC found at I2C address 0x68");
-
-          # auto now = this->rtc_->now();
-          # if (now.is_valid()) {
-            # set_time(now.year, now.month, now.day_of_month, now.hour, now.minute, now.second, now.day_of_week);
-            # ESP_LOGI("DS3231", "RTC time set to %04d-%02d-%02d %02d:%02d:%02d",
-                     # now.year, now.month, now.day_of_month, now.hour, now.minute, now.second);
-          # } else {
-            # ESP_LOGE("DS3231", "SNTP time is not valid; cannot set RTC");
-          # }
-        # }
-
-        # void update() override {
-          # auto time = get_time();
-          # if (time.year > 0) {
-            # ESP_LOGI("DS3231", "Current RTC Time: %04d-%02d-%02d %02d:%02d:%02d",
-                     # time.year, time.month, time.day, time.hour, time.minute, time.second);
-          # } else {
-            # ESP_LOGE("DS3231", "Failed to read time from RTC");
-          # }
-        # }
-
-        # void set_time(int year, int month, int day, int hour, int minute, int second, int day_of_week) {
-          # Wire.beginTransmission(0x68);
-          # Wire.write(0);  // Start at register 0
-          # Wire.write(dec_to_bcd(second));        // Seconds
-          # Wire.write(dec_to_bcd(minute));        // Minutes
-          # Wire.write(dec_to_bcd(hour));          // Hours
-          # Wire.write(dec_to_bcd(day_of_week));   // Day of the week
-          # Wire.write(dec_to_bcd(day));           // Day of the month
-          # Wire.write(dec_to_bcd(month));         // Month
-          # Wire.write(dec_to_bcd(year - 2000));   // Year
-          # Wire.endTransmission();
-        # }
-
-        # struct Time {
-          # int year;
-          # int month;
-          # int day;
-          # int hour;
-          # int minute;
-          # int second;
-          # int day_of_week;
-        # };
-
-        # Time get_time() {
-          # Wire.beginTransmission(0x68);
-          # Wire.write(0);  // Start at register 0
-          # Wire.endTransmission();
-
-          # if (Wire.requestFrom(0x68, 7) != 7) {
-            # ESP_LOGE("DS3231", "Failed to read time registers");
-            # return Time{0, 0, 0, 0, 0, 0, 0};
-          # }
-
-          # uint8_t second = bcd_to_dec(Wire.read());
-          # uint8_t minute = bcd_to_dec(Wire.read());
-          # uint8_t hour = bcd_to_dec(Wire.read());
-          # uint8_t day_of_week = bcd_to_dec(Wire.read());
-          # uint8_t day = bcd_to_dec(Wire.read());
-          # uint8_t month = bcd_to_dec(Wire.read());
-          # uint16_t year = bcd_to_dec(Wire.read()) + 2000;
-
-          # return Time{year, month, day, hour, minute, second, day_of_week};
-        # }
-
-       # private:
-        # esphome::time::RealTimeClock *rtc_;
-
-        # uint8_t dec_to_bcd(int val) {
-          # return ((val / 10 * 16) + (val % 10));
-        # }
-
-        # int bcd_to_dec(uint8_t val) {
-          # return ((val / 16 * 10) + (val % 16));
-        # }
-      # };
-
-      # auto my_rtc = new DS3231Component(id(rtc_time));
-      # App.register_component(my_rtc);
-      # return {};
-
-
+  
 
 
