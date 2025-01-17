@@ -81,15 +81,22 @@ globals:
     type: int
   - id: rising
     type: int
-  - id: sw_tank_size
-    type: int
-    initial_value: "1000"
-  - id: fw_tank_size
-    type: int
-    initial_value: "2000"
   - id: sw_min_on # Prevent Saltwater pump from short cycling
     type: int
     initial_value: "300000"  # Must be ON at least 5 minutes
+  # Remaining global variables for simulation only
+  - id: sw_tank_size
+    type: int
+    initial_value: "4542"
+  - id: fw_tank_size
+    type: int
+    initial_value: "9084"
+  - id: new_sw_level
+    type: float
+    initial_value: "0"
+  - id: new_fw_level
+    type: float
+    initial_value: "0"
 # Time component to get the current time from an NTP server 
 # Need to add a RTC so that above WiFi connection can be removed
 # calculate dayAddress 10 seconds after midnight when month and day may change.
@@ -113,14 +120,23 @@ time:
         minutes: /1
         then:
           - lambda: |-
-              auto now = id(rtc_time).now();
-              int month = now.month;
-              int day = now.day_of_month;
+              // Include the C time library explicitly
+              #include <time.h>
+              #include <sys/time.h>
+              struct timeval tv_now;
+              gettimeofday(&tv_now, nullptr);
+              time_t now = tv_now.tv_sec;
+              time_t thirty_minutes_ago = now - (id(tide_time_offset).state * 60);
+              struct tm timeinfo;
+              localtime_r(&thirty_minutes_ago, &timeinfo);
+              int year = 1900 + timeinfo.tm_year; // tm_year counts years since 1900 
+              int month = 1 + timeinfo.tm_mon; // tm_mon is 0-based, so add 1 
+              int day = timeinfo.tm_mday; 
+              int hour = timeinfo.tm_hour;
+              int minute = timeinfo.tm_min;
               int days = 0;
-              int year = now.year;
-              int hour = now.hour;
               int min_height = id(min_height_num).state * 10;
-              ESP_LOGD("main", "Loop: %d %d %d %d", month,day,year,hour);
+              //ESP_LOGD("main", "Loop: %d %d %d %d %d", month,day,year,hour,minute);
               int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
               if (((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0)) {
                 int monthSize[12] = {31,29,31,30,31,30,31,31,30,31,30,31};
@@ -133,7 +149,7 @@ time:
                 days = days + monthSize[i];
                 } 
               id(dayAddress) = (days + day) * 12;
-              int dayMinute = now.hour * 60 + now.minute;
+              int dayMinute = hour * 60 + minute;
               int t0 = 0;
               int h0 = 0;
               int t1 = 0;
@@ -177,11 +193,9 @@ time:
         minutes: /1
         then:
           - lambda: |-
-              int new_level = id(sw_level).state;
               int tmp = 0;
               int begin_time = 0;
               int min_height = id(min_height_num).state * 10;
-              float float_new_level = id(fw_level).state;
               // Start SW pump if tide is up and level is low.  Keep pumping until full
               if (id(height) > min_height) {
                 if (id(sw_level).state < id(sw_refill_level).state and !id(sw_pump).state) {
@@ -189,57 +203,58 @@ time:
                   //ESP_LOGD("main", "Begin: %d %d",begin_time, id(sw_min_on)); 
                   id(sw_pump).turn_on();
                 }
-                if ((id(sw_level).state >= id(sw_tank_size)) and id(sw_pump).state and (millis() - begin_time) > id(sw_min_on)) {
+                // Adjust scaling of SW level sensor to allow for some extra filling due to
+                // minimum SW pump ON time algorithm
+                if ((id(sw_level).state >= 100) and id(sw_pump).state and (millis() - begin_time) > id(sw_min_on)) {
                   id(sw_pump).turn_off();
                 }
               }
               else {
                 if ((id(sw_pump).state) and (millis() - begin_time) >= id(sw_min_on)) {
-                  tmp = millis() - begin_time;
                   //ESP_LOGD("main", "End: %d %d",begin_time, millis());
                   id(sw_pump).turn_off();
                 }
               }
+              // Start of simulation code
               //Using SW Tank
               if(id(booster_pump).state){
-                new_level = new_level - id(sw_use_rate).state ;
-                //ESP_LOGD("main", "SW New Level: %d", new_level);
-                if (new_level < 0) {
-                  new_level = 0;
-                }
+                id(new_sw_level) = id(new_sw_level) - id(sw_use_rate).state;
+                //ESP_LOGD("main", "SW New Level1: %d", id(new_sw_level));
               }
               //Filling SW Tank
               if(id(sw_pump).state){
-                new_level = new_level + id(sw_fill_rate).state;
-                if (new_level > id(sw_tank_size)) {
-                  new_level = id(sw_tank_size);
-                }
+                id(new_sw_level) = id(new_sw_level) + id(sw_fill_rate).state;
+                //ESP_LOGD("main", "SW New Level2: %.2f", id(new_sw_level));
+
               }
               if(id(sw_pump).state or id(booster_pump).state) {
                 auto call1 = id(sw_level).make_call();
-                call1.set_value(new_level);
+                tmp = static_cast<int>((id(new_sw_level) / id(sw_tank_size) * 100));
+                //ESP_LOGD("main", "SW New Level3: %d", tmp);
+                call1.set_value(tmp);
                 call1.perform();
               }
               //Using FW Tank
               auto now = id(rtc_time).now();
               int hour = now.hour;
               if(hour > id(fw_start_hour).state and hour < id(fw_stop_hour).state) {
-                float_new_level = float_new_level - id(fw_use_rate).state;
-                if (float_new_level < 0) {
-                  float_new_level = 0;
-                }
+                id(new_fw_level) = id(new_fw_level) - id(fw_use_rate).state;
               }
               //Filling FW Tank
               if(id(hp_pump).state){
-                float_new_level = float_new_level + id(sw_use_rate).state * id(ro_recovery).state / 100 ; 
+                id(new_fw_level) = id(new_fw_level) + (id(sw_use_rate).state * id(ro_recovery).state / 100.0) ;
+                ESP_LOGD("main", "FW New Level1: %.2f", id(new_fw_level)); 
               }              
               if((hour > id(fw_start_hour).state and hour < id(fw_stop_hour).state) or id(hp_pump).state) {
                 auto call2 = id(fw_level).make_call();
-                call2.set_value(float_new_level);
+                tmp = static_cast<int>((id(new_fw_level) / id(fw_tank_size) * 100.0));
+                ESP_LOGD("main", "FW New Level2: %d", tmp); 
+                call2.set_value(tmp);
                 call2.perform();
               }
+              // End of simulation code
               // Booster then HP Pump Control
-              if (id(fw_level).state >= id(fw_tank_size) or id(sw_level).state < id(sw_min_level).state) {
+              if (id(fw_level).state >= 100 or id(sw_level).state < id(sw_min_level).state) {
                 id(stop_desal)->execute(id(hp_stop_delay).state * 1000); 
               }
               if (id(fw_level).state < id(fw_min_level).state and id(sw_level).state > id(sw_min_level).state * 2) {
@@ -301,7 +316,22 @@ sensor:
     lambda: |-
       return float(id(height)) / 10;    
     update_interval: 60s
-
+  - platform: pulse_counter
+    name: "Flow Count"
+    id: flow_count
+    pin:
+      number: 21
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - multiply: 1
+    total:
+      unit_of_measurement: 'litres'
+      name: 'Water Use'
+    update_interval: 10s 
+  
 binary_sensor:
   - platform: template
     name: "Tide Direction"
@@ -359,39 +389,39 @@ number:
     id: sw_min_level
     web_server:
       sorting_group_id: sorting_group_config
-    unit_of_measurement: "gal"
+    unit_of_measurement: "%"
     optimistic: true
     mode: box
     min_value: 0
-    max_value: 250
+    max_value: 25
     step: 1
-    initial_value: 100
+    initial_value: 10
     restore_value: true
   - platform: template 
     name: "SW Refill Level"
     id: sw_refill_level
     web_server:
       sorting_group_id: sorting_group_config
-    unit_of_measurement: "gal"
+    unit_of_measurement: "%"
     optimistic: true
     mode: box
     min_value: 0
-    max_value: 900
+    max_value: 90
     step: 1
-    initial_value: 600
+    initial_value: 60
     restore_value: true
   - platform: template 
     name: "FW Min Level"
     id: fw_min_level
     web_server:
       sorting_group_id: sorting_group_config
-    unit_of_measurement: "gal"
+    unit_of_measurement: "%"
     optimistic: true
     mode: box
-    min_value: 800
-    max_value: 1000
+    min_value: 80
+    max_value: 100
     step: 1
-    initial_value: 950
+    initial_value: 95
     restore_value: true
   # Set Date Times
   - platform: template 
@@ -456,11 +486,11 @@ number:
     id: sw_level
     web_server:
       sorting_group_id: sorting_group_levels
-    unit_of_measurement: "gal"
+    unit_of_measurement: "%"
     optimistic: true
     mode: slider
     min_value: 0
-    max_value: 1000
+    max_value: 100
     step: 1
     initial_value: 0
   - platform: template 
@@ -468,11 +498,11 @@ number:
     id: fw_level
     web_server:
       sorting_group_id: sorting_group_levels
-    unit_of_measurement: "gal"
+    unit_of_measurement: "%"
     optimistic: true
     mode: slider
     min_value: 0
-    max_value: 1100
+    max_value: 110
     step: 1
     initial_value: 0
     # Simulation components, to be removed after analog level sensors installed
@@ -481,25 +511,27 @@ number:
     id: sw_fill_rate
     web_server:
       sorting_group_id: sorting_group_simulation
-    unit_of_measurement: "gpm"
+    unit_of_measurement: "lpm"
     optimistic: true
     mode: box
     min_value: 0
-    max_value: 50
+    max_value: 200
     step: 1
-    initial_value: 35
+    # 1000 US Gal/hour
+    initial_value: 63
   - platform: template 
     name: "SW Use Rate"
     id: sw_use_rate
     web_server:
       sorting_group_id: sorting_group_simulation
-    unit_of_measurement: "gpm"
+    unit_of_measurement: "lpm"
     optimistic: true
     mode: box
     min_value: 0
-    max_value: 10
+    max_value: 30
     step: 1
-    initial_value: 5
+    # 40 US gal/per *.15 * 3.78
+    initial_value: 16.8
   - platform: template 
     name: "RO Recovery"
     id: ro_recovery
@@ -517,13 +549,13 @@ number:
     id: fw_use_rate
     web_server:
       sorting_group_id: sorting_group_simulation
-    unit_of_measurement: "gpm"
+    unit_of_measurement: "lpm"
     optimistic: true
     mode: box
     min_value: 0
-    max_value: 1.0
+    max_value: 3.0
     step: 0.01
-    initial_value: 0.47
+    initial_value: 1.78
   - platform: template 
     name: "FW Start Hour"
     id: fw_start_hour
@@ -548,6 +580,18 @@ number:
     max_value: 23
     step: 1
     initial_value: 22
+  - platform: template 
+    name: "Tide Time Offset"
+    id: tide_time_offset
+    web_server:
+      sorting_group_id: sorting_group_settime
+    unit_of_measurement: "minutes"
+    optimistic: true
+    mode: box
+    min_value: 0
+    max_value: 120
+    step: 1
+    initial_value: 30  # Added another 60 for daylight standard time
 # Not used since ESP32 will be enclosed in a plastic box to keep it away from water.
 light:
   - platform: esp32_rmt_led_strip
@@ -586,7 +630,7 @@ button:
     on_press:
       then:
         - lambda: |-
-            ESP_LOGD("main", "Button Pressed");
+            //ESP_LOGD("main", "Button Pressed");
             int year = id(dt_year).state;
             int month = id(dt_month).state;
             int day = id(dt_day).state;
@@ -623,6 +667,8 @@ button:
         - lambda: !lambda |-
             int value = 123456789;
             int value2 = 0;
+            int nv_address = 2;
+            int start_address = nv_address * 4;
             uint8_t bytes[4];
             bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
             bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
@@ -632,7 +678,7 @@ button:
             // Write data
             Wire.beginTransmission(0x57);
             Wire.write(0);  // Start at bank 0
-            Wire.write(10);  // Start at register 10 decimal ( up 255 within bank)
+            Wire.write(start_address);  // Start at register 10 decimal ( up 255 within bank)
             for (int i = 0; i < 4; i++) {
              Wire.write(bytes[i]);
             }
@@ -641,7 +687,7 @@ button:
             delay(5); // Must wait for write operation to complete
             Wire.beginTransmission(0x57);
             Wire.write(0);  // Start at bank 0
-            Wire.write(10);  // Start at register 10 decimal ( up 255 within bank)
+            Wire.write(start_address);  // Start at register 10 decimal ( up 255 within bank)
             Wire.endTransmission();
             if (Wire.requestFrom(0x57, 4) != 4) {
              ESP_LOGD("DS3231", "Failed to read registers");   
