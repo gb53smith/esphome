@@ -96,7 +96,56 @@ globals:
     initial_value: "0"
   - id: new_fw_level
     type: float
-    initial_value: "0"
+    initial_value: "8629"
+  - id: at24c32write
+    type: std::function<int(int, int)>
+    initial_value: |-
+      // Write of integer at locations 0-1023
+      [](int address, int value) -> int {        
+      uint8_t deviceAddress = 0x57; // Device address
+      uint8_t bytes[4];
+      uint8_t bank = (address >> 8) & 0xFF; 
+      uint8_t page = address & 0xFF * 4; 
+      bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
+      bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
+      bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
+      bytes[3] = value & 0xFF;           
+      // Write data
+      Wire.beginTransmission(deviceAddress);
+      Wire.write(bank);  // Start with bank address
+      Wire.write(page);  // Start of integer address within bank)
+      for (int i = 0; i < 4; i++) {
+        Wire.write(bytes[i]);
+      }
+      Wire.endTransmission();
+      return 0;
+      }
+  - id: at24c32read
+    type: std::function<int(int)>
+    initial_value: |-
+      // Read of integer at locations 0-1023
+      [](int address) -> int {        
+      int deviceAddress = 87; // Device address 0x57
+      uint8_t bytes[4];
+      uint8_t bank = (address >> 8) & 0xFF; 
+      uint8_t page = address & 0xFF * 4;
+      int value = 0;
+      Wire.beginTransmission(deviceAddress);
+      Wire.write(bank);  // Start at bank 0
+      Wire.write(page);  // Start at register 10 decimal ( up 255 within bank)
+      Wire.endTransmission();
+      if (Wire.requestFrom(deviceAddress, 4) != 4) {
+        value = -1;  // Error code
+        ESP_LOGD("DS3231", "Failed to read registers");	 
+      }
+      else {
+        for (int i = 0; i < 4; i++) {
+          bytes[i] = Wire.read();
+        }
+        value = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];	
+      }
+      return value;
+      }
 # Time component to get the current time from an NTP server 
 # Need to add a RTC so that above WiFi connection can be removed
 # calculate dayAddress 10 seconds after midnight when month and day may change.
@@ -106,10 +155,6 @@ i2c:
   scl: GPIO02
   scan: true
   id: bus_a
-
-#i2c_device:
-# id: a24c32
-# address: 0x57
 
 time:
   - platform: ds1307 
@@ -540,10 +585,10 @@ number:
     unit_of_measurement: "%"
     optimistic: true
     mode: box
-    min_value: 1
-    max_value: 25
+    min_value: 10
+    max_value: 30
     step: 1
-    initial_value: 15
+    initial_value: 28
   - platform: template 
     name: "FW Use Rate"
     id: fw_use_rate
@@ -630,7 +675,6 @@ button:
     on_press:
       then:
         - lambda: |-
-            //ESP_LOGD("main", "Button Pressed");
             int year = id(dt_year).state;
             int month = id(dt_month).state;
             int day = id(dt_day).state;
@@ -647,10 +691,10 @@ button:
             Wire.write(0);       // Seconds
             Wire.write(minute);  // Minutes
             Wire.write(hour);    // Hours
-            Wire.write(1);   // Day of the week
+            Wire.write(1);       // Day of the week
             Wire.write(day);     // Day of the month
-            Wire.write(month);  // Month
-            Wire.write(year);   // Year
+            Wire.write(month);   // Month
+            Wire.write(year);    // Year
             Wire.endTransmission();
         - ds1307.read_time:
             id: rtc_time
@@ -665,41 +709,18 @@ button:
     on_press:
       then:
         - lambda: !lambda |-
-            int value = 123456789;
-            int value2 = 0;
-            int nv_address = 2;
-            int start_address = nv_address * 4;
-            uint8_t bytes[4];
-            bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
-            bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
-            bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
-            bytes[3] = value & 0xFF;
-            uint8_t deviceAddress = 0x57; // Device address
-            // Write data
-            Wire.beginTransmission(0x57);
-            Wire.write(0);  // Start at bank 0
-            Wire.write(start_address);  // Start at register 10 decimal ( up 255 within bank)
-            for (int i = 0; i < 4; i++) {
-             Wire.write(bytes[i]);
-            }
-            Wire.endTransmission();
-            //Reading back
-            delay(5); // Must wait for write operation to complete
-            Wire.beginTransmission(0x57);
-            Wire.write(0);  // Start at bank 0
-            Wire.write(start_address);  // Start at register 10 decimal ( up 255 within bank)
-            Wire.endTransmission();
-            if (Wire.requestFrom(0x57, 4) != 4) {
-             ESP_LOGD("DS3231", "Failed to read registers");   
-            }
-            else {
-              for (int i = 0; i < 4; i++) {
-                bytes[i] = Wire.read();
-              }
-              value2 = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-              //ESP_LOGD("DS3231", "Data0 %u Data1 %u Data2 %u Data3 %u", data0,data1,data2,data3);
-              ESP_LOGD("DS3231", "Value %d Value2 %d", value, value2);
-            }
+            int result;
+            int data;
+            int reg = 10;
+            result = id(at24c32read)(reg);
+            ESP_LOGD("main", "Read Result %d", result);
+            //delay(5);
+            data = result + 1;
+            result = id(at24c32write)(reg, data);
+            ESP_LOGD("main", "Write Result %d", result);
+
+
+
 
   
 
