@@ -6,6 +6,10 @@ esphome:
     board_upload.maximum_ram_size: 524288
   <<: !include .boot_jan.yaml
 # Use .boot.yaml for full year
+external_components:
+  - source: github://pilotak/esphome-eeprom
+    components: [i2c_eeprom]
+
 esp32:
   board: esp32-s3-devkitc-1
   variant: esp32s3
@@ -19,7 +23,7 @@ psram:
 
 # Enable logging
 logger:
-  level: debug
+  level: error
 
 # Temporary WiFi connect for debug.  Open on PC URL = desal.local/
 wifi:
@@ -59,6 +63,9 @@ web_server:
     - id: sorting_group_pumps
       name: "Pump Operation"
       sorting_weight: 30
+    - id: sorting_group_usage
+      name: "Water Usage"
+      sorting_weight: 35
     - id: sorting_group_settime
       name: "Set Date/Time"
       sorting_weight: 40
@@ -97,27 +104,42 @@ globals:
   - id: new_fw_level
     type: float
     initial_value: "8629"
+  - id: current_count
+    type: int
+    initial_value: "0"
+  - id: last_count
+    type: int
+    initial_value: "0"
+  - id: hour_use_count
+    type: int
+    initial_value: "0"
+  - id: day_use_count
+    type: int
+    initial_value: "0"
+  - id: meter_count
+    type: int
+    initial_value: "0"
+  - id: global_meter
+    type: int
+    initial_value: "0"
+  - id: booted
+    type: bool
+    initial_value: "true"
+  - id: write_flag
+    type: bool
+    initial_value: "false"
   - id: at24c32write
     type: std::function<int(int, int)>
     initial_value: |-
       // Write of integer at locations 0-1023
-      [](int address, int value) -> int {        
-      uint8_t deviceAddress = 0x57; // Device address
-      uint8_t bytes[4];
-      uint8_t bank = (address >> 8) & 0xFF; 
-      uint8_t page = address & 0xFF * 4; 
-      bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
-      bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
-      bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
-      bytes[3] = value & 0xFF;           
-      // Write data
-      Wire.beginTransmission(deviceAddress);
-      Wire.write(bank);  // Start with bank address
-      Wire.write(page);  // Start of integer address within bank)
-      for (int i = 0; i < 4; i++) {
-        Wire.write(bytes[i]);
-      }
-      Wire.endTransmission();
+      [](int address, int value) -> int {
+        address = address << 2;  // Starting address for 4 bytes needed for an integer       
+        uint8_t write_bytes[4];
+        write_bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
+        write_bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
+        write_bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
+        write_bytes[3] = value & 0xFF;       
+        at24c32->put(address, write_bytes, sizeof(write_bytes));
       return 0;
       }
   - id: at24c32read
@@ -125,26 +147,11 @@ globals:
     initial_value: |-
       // Read of integer at locations 0-1023
       [](int address) -> int {        
-      int deviceAddress = 87; // Device address 0x57
-      uint8_t bytes[4];
-      uint8_t bank = (address >> 8) & 0xFF; 
-      uint8_t page = address & 0xFF * 4;
-      int value = 0;
-      Wire.beginTransmission(deviceAddress);
-      Wire.write(bank);  // Start at bank 0
-      Wire.write(page);  // Start at register 10 decimal ( up 255 within bank)
-      Wire.endTransmission();
-      if (Wire.requestFrom(deviceAddress, 4) != 4) {
-        value = -1;  // Error code
-        ESP_LOGD("DS3231", "Failed to read registers");	 
-      }
-      else {
-        for (int i = 0; i < 4; i++) {
-          bytes[i] = Wire.read();
-        }
-        value = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];	
-      }
-      return value;
+        uint8_t read_bytes[4];
+        address = address << 2;  // Starting address for 4 bytes needed for an integer  
+        at24c32->get(address, read_bytes, sizeof(read_bytes));
+        int value = (read_bytes[0] << 24) | (read_bytes[1] << 16) | (read_bytes[2] << 8) | read_bytes[3];
+        return value;
       }
 # Time component to get the current time from an NTP server 
 # Need to add a RTC so that above WiFi connection can be removed
@@ -155,13 +162,83 @@ i2c:
   scl: GPIO02
   scan: true
   id: bus_a
-
+#  frequency: 100kHz
+i2c_eeprom:
+  - id: at24c32
+    size: 32KB
+    address: 0x57
+  - id: ds3231rtc
+    size: 1KB
+    address: 0x68
 time:
   - platform: ds1307 
     id: rtc_time
     timezone: "unknown"
     on_time:
       - seconds: 10
+        minutes: /1
+        then:
+          - lambda: |-
+              // meter_count = 0, last_hour = +1, last_day = +2 stored in at24c32
+              auto now = id(rtc_time).now();
+              int year = now.year;
+              int meter = (year % 16) * 64;  // Move storage page each year to reduce wear
+              id(global_meter) = meter;
+              int last_hour = meter + 1;
+              int water = id(water_use).state;
+              int usage =  id(water_use).state - id(last_count);
+              ESP_LOGE("main","Hour Use %d %d %d %d", usage, id(last_count), water, meter);
+              if (usage > 0) {
+                id(at24c32write)(last_hour, usage);
+                id(hour_use_count) = usage;  // mirror to global
+                id(meter_count) = id(meter_count) + usage;
+                id(write_flag) = true;  // delay write until next second to separate the i2c writes
+              } else { // Must have been a power ON reset in the last period or no usage
+                  ESP_LOGE("main","Wrote 0 Here %d", last_hour);
+                  id(at24c32write)(last_hour, 0);
+                  id(hour_use_count) = 0;     
+              }
+              id(last_count) = id(water_use).state;
+
+      - seconds: 11
+        minutes: /1
+        then:
+          - lambda: |-
+              if (id(write_flag)){
+                ESP_LOGE("main","Wrote Meter Here %d %d",id(global_meter), id(meter_count));
+                id(at24c32write)(id(global_meter), id(meter_count));
+                id(write_flag) = false;
+              }
+      - seconds: 12
+        minutes: /1
+        then:
+          - lambda: |-
+              int meter = id(global_meter);  // Move storage page each year to reduce wear
+              int last_hour = meter + 1; 
+              int tmp2 = id(at24c32read)(last_hour); // Update from at24c32
+              ESP_LOGE("main","Last Day %d %d", tmp2, last_hour);       
+      - seconds: 13
+        minutes: /1
+        then:
+          - lambda: |-
+              int meter = id(global_meter);  // Move storage page each year to reduce wear 
+              int tmp1 = id(at24c32read)(meter); // Update from at24c32
+              ESP_LOGE("main","Meter %d %d", tmp1, meter); 
+      - seconds: 0 
+        minutes: 1
+        hours: 0
+        then:
+          - lambda: |-
+              // Just after midnight calculate the use from last day
+              auto now = id(rtc_time).now();
+              int year = now.year;
+              int meter = (year % 16) * 64;  // Move storage point each year to reduce wear
+              //int last_day = id(at24c32read)(meter + 2);
+              //id(day_use_count) = id(meter_count) - last_day;
+              //id(at24c32write)(meter + 2, id(meter_count));
+
+
+      - seconds: 30
         minutes: /1
         then:
           - lambda: |-
@@ -361,9 +438,36 @@ sensor:
     lambda: |-
       return float(id(height)) / 10;    
     update_interval: 60s
+  - platform: template
+    name: "Last Hour Water Use"
+    state_class: measurement
+    unit_of_measurement: "L"
+    web_server:
+      sorting_group_id: sorting_group_usage
+    lambda: |-
+      return id(hour_use_count);   
+    update_interval: 1s
+  - platform: template
+    name: "Last Day Water Use"
+    state_class: measurement
+    unit_of_measurement: "L"
+    web_server:
+      sorting_group_id: sorting_group_usage
+    lambda: |-
+      return id(day_use_count);     
+    update_interval: 10min
+  - platform: template
+    name: "Water Meter"
+    state_class: measurement
+    unit_of_measurement: "L"
+    web_server:
+      sorting_group_id: sorting_group_usage
+    lambda: |-
+      return id(meter_count);  
+    update_interval: 1s
   - platform: pulse_counter
-    name: "Flow Count"
-    id: flow_count
+    name: "Flow Counter"
+    id: flow_rate
     pin:
       number: 21
       inverted: true
@@ -375,6 +479,7 @@ sensor:
     total:
       unit_of_measurement: 'litres'
       name: 'Water Use'
+      id: water_use
     update_interval: 10s 
   
 binary_sensor:
@@ -388,6 +493,16 @@ binary_sensor:
       } else {
         return false;
       }
+# Remove grounding strap inside enclosure for one minute to reset water meter count
+  - platform: gpio
+    name: "Meter Reset"
+    id: meter_reset
+    internal: true
+    pin:
+      number: GPIO47
+      mode:
+        input: true
+        pullup: true
 
 number: 
   - platform: template 
@@ -681,21 +796,20 @@ button:
             int hour = id(dt_hour).state;
             int tmp;
             int minute = id(dt_minute).state;
+            uint8_t write_bytes[7];
             year = (year - 2000) / 10 * 16 + ((year - 2000) % 10);
             month = month / 10 * 16 + (month % 10);
             day = day / 10 * 16 + (day % 10);
             hour = hour / 10 * 16 + (hour % 10);
             minute = minute / 10 * 16 + (minute % 10);
-            Wire.beginTransmission(0x68);
-            Wire.write(0);  // Start at register 0
-            Wire.write(0);       // Seconds
-            Wire.write(minute);  // Minutes
-            Wire.write(hour);    // Hours
-            Wire.write(1);       // Day of the week
-            Wire.write(day);     // Day of the month
-            Wire.write(month);   // Month
-            Wire.write(year);    // Year
-            Wire.endTransmission();
+            write_bytes[0] = static_cast<std::uint8_t>(0);
+            write_bytes[1] = static_cast<std::uint8_t>(minute);
+            write_bytes[2] = static_cast<std::uint8_t>(hour);
+            write_bytes[3] = static_cast<std::uint8_t>(1);
+            write_bytes[4] = static_cast<std::uint8_t>(day);
+            write_bytes[5] = static_cast<std::uint8_t>(month);
+            write_bytes[6] = static_cast<std::uint8_t>(year);
+            ds3231rtc->put(0, write_bytes, sizeof(write_bytes));
         - ds1307.read_time:
             id: rtc_time
         - lambda: |-
@@ -709,19 +823,20 @@ button:
     on_press:
       then:
         - lambda: !lambda |-
-            int result;
-            int data;
-            int reg = 10;
-            result = id(at24c32read)(reg);
-            ESP_LOGD("main", "Read Result %d", result);
-            //delay(5);
-            data = result + 1;
-            result = id(at24c32write)(reg, data);
-            ESP_LOGD("main", "Write Result %d", result);
+            int value = 123456;
+            uint8_t write_bytes[4];
+            write_bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
+            write_bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
+            write_bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
+            write_bytes[3] = value & 0xFF;       
+            //at24c32->put(55, write_bytes, sizeof(write_bytes));
+            uint8_t read_bytes[4];
+            //at24c32->get(55, read_bytes, sizeof(read_bytes));
+            //int value2 = (read_bytes[0] << 24) | (read_bytes[1] << 16) | (read_bytes[2] << 8) | read_bytes[3];
+            id(at24c32write)(10, 654321);
+            int value2 = id(at24c32read)(10);
+            ESP_LOGE("eeprom","Read: %d ", value2);
 
 
-
-
-  
 
 
