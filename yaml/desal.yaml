@@ -116,18 +116,12 @@ globals:
   - id: day_use_count
     type: int
     initial_value: "0"
+  - id: last_day_meter
+    type: int
+    restore_value: true
   - id: meter_count
     type: int
     initial_value: "0"
-  - id: global_meter
-    type: int
-    initial_value: "0"
-  - id: booted
-    type: bool
-    initial_value: "true"
-  - id: write_flag
-    type: bool
-    initial_value: "false"
   - id: at24c32write
     type: std::function<int(int, int)>
     initial_value: |-
@@ -153,6 +147,18 @@ globals:
         int value = (read_bytes[0] << 24) | (read_bytes[1] << 16) | (read_bytes[2] << 8) | read_bytes[3];
         return value;
       }
+  - id: restore_settings
+    type: std::function<int()>
+    initial_value: |-
+      // Restore settings stored in at24c32, called at boot
+      // Reserve first 256 bytes for settings.
+      []() -> int {
+        auto now = id(rtc_time).now();
+        int year = now.year;
+        int meter_address = year % 16; 
+        id(meter_count) = id(at24c32read)(meter_address); 
+        return 0;
+      }
 # Time component to get the current time from an NTP server 
 # Need to add a RTC so that above WiFi connection can be removed
 # calculate dayAddress 10 seconds after midnight when month and day may change.
@@ -170,74 +176,47 @@ i2c_eeprom:
   - id: ds3231rtc
     size: 1KB
     address: 0x68
+
 time:
   - platform: ds1307 
     id: rtc_time
     timezone: "unknown"
     on_time:
       - seconds: 10
-        minutes: /1
+        minutes: 0
+        hours: '*'
         then:
           - lambda: |-
-              // meter_count = 0, last_hour = +1, last_day = +2 stored in at24c32
               auto now = id(rtc_time).now();
               int year = now.year;
-              int meter = (year % 16) * 64;  // Move storage page each year to reduce wear
-              id(global_meter) = meter;
-              int last_hour = meter + 1;
-              int water = id(water_use).state;
-              int usage =  id(water_use).state - id(last_count);
-              ESP_LOGE("main","Hour Use %d %d %d %d", usage, id(last_count), water, meter);
+              int meter_address = year % 16;  // Move storage page each year to reduce wear      
+              int usage =  id(water_use).state / id(meter_cal).state - id(last_count);
+              int meter = 0; // meter value
               if (usage > 0) {
-                id(at24c32write)(last_hour, usage);
-                id(hour_use_count) = usage;  // mirror to global
                 id(meter_count) = id(meter_count) + usage;
-                id(write_flag) = true;  // delay write until next second to separate the i2c writes
+                id(hour_use_count) = usage;
+                id(at24c32write)(meter_address, id(meter_count)); //back to eeprom
               } else { // Must have been a power ON reset in the last period or no usage
-                  ESP_LOGE("main","Wrote 0 Here %d", last_hour);
-                  id(at24c32write)(last_hour, 0);
-                  id(hour_use_count) = 0;     
+                  id(hour_use_count) = 0;  // mirror to global
               }
+              //ESP_LOGE("main","Hour Use: water %d  usage %d meter %d", water, usage, id(meter_count));
               id(last_count) = id(water_use).state;
-
-      - seconds: 11
-        minutes: /1
+      - seconds: 5 
+        minutes: 59
+        hours: 23
         then:
           - lambda: |-
-              if (id(write_flag)){
-                ESP_LOGE("main","Wrote Meter Here %d %d",id(global_meter), id(meter_count));
-                id(at24c32write)(id(global_meter), id(meter_count));
-                id(write_flag) = false;
-              }
-      - seconds: 12
-        minutes: /1
-        then:
-          - lambda: |-
-              int meter = id(global_meter);  // Move storage page each year to reduce wear
-              int last_hour = meter + 1; 
-              int tmp2 = id(at24c32read)(last_hour); // Update from at24c32
-              ESP_LOGE("main","Last Day %d %d", tmp2, last_hour);       
-      - seconds: 13
-        minutes: /1
-        then:
-          - lambda: |-
-              int meter = id(global_meter);  // Move storage page each year to reduce wear 
-              int tmp1 = id(at24c32read)(meter); // Update from at24c32
-              ESP_LOGE("main","Meter %d %d", tmp1, meter); 
-      - seconds: 0 
-        minutes: 1
-        hours: 0
-        then:
-          - lambda: |-
-              // Just after midnight calculate the use from last day
-              auto now = id(rtc_time).now();
-              int year = now.year;
-              int meter = (year % 16) * 64;  // Move storage point each year to reduce wear
-              //int last_day = id(at24c32read)(meter + 2);
-              //id(day_use_count) = id(meter_count) - last_day;
-              //id(at24c32write)(meter + 2, id(meter_count));
-
-
+              // Just before midnight calculate the use for the current day
+              // day_address = (day of year number) + 64 stored in at24c32
+              int day_address = id(dayAddress)/12 + 64;
+              if ( id(meter_count) - id(last_day_meter) > 0) {
+                id(day_use_count) = id(meter_count) - id(last_day_meter);
+              } else {
+                id(day_use_count) = 0 ;
+              }             
+              id(at24c32write)(day_address, id(day_use_count)); //back to eeprom
+              id(last_day_meter) = id(meter_count);
+              id(day_water_use).publish_state(id(day_use_count));
       - seconds: 30
         minutes: /1
         then:
@@ -259,7 +238,7 @@ time:
               int days = 0;
               int min_height = id(min_height_num).state * 10;
               //ESP_LOGD("main", "Loop: %d %d %d %d %d", month,day,year,hour,minute);
-              int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+              int monthSize[12];
               if (((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0)) {
                 int monthSize[12] = {31,29,31,30,31,30,31,31,30,31,30,31};
               } else {
@@ -439,23 +418,24 @@ sensor:
       return float(id(height)) / 10;    
     update_interval: 60s
   - platform: template
-    name: "Last Hour Water Use"
+    name: "Hour Water Use"
     state_class: measurement
     unit_of_measurement: "L"
     web_server:
       sorting_group_id: sorting_group_usage
     lambda: |-
       return id(hour_use_count);   
-    update_interval: 1s
+    update_interval: 60s
   - platform: template
-    name: "Last Day Water Use"
+    name: "Day Water Use"
+    id: day_water_use
     state_class: measurement
     unit_of_measurement: "L"
+    update_interval: never
     web_server:
       sorting_group_id: sorting_group_usage
     lambda: |-
-      return id(day_use_count);     
-    update_interval: 10min
+      return id(day_use_count);
   - platform: template
     name: "Water Meter"
     state_class: measurement
@@ -464,10 +444,11 @@ sensor:
       sorting_group_id: sorting_group_usage
     lambda: |-
       return id(meter_count);  
-    update_interval: 1s
+    update_interval: 60s
   - platform: pulse_counter
     name: "Flow Counter"
     id: flow_rate
+    internal: true
     pin:
       number: 21
       inverted: true
@@ -479,8 +460,9 @@ sensor:
     total:
       unit_of_measurement: 'litres'
       name: 'Water Use'
+      internal: true
       id: water_use
-    update_interval: 10s 
+    update_interval: 60s 
   
 binary_sensor:
   - platform: template
@@ -664,7 +646,19 @@ number:
     min_value: 0
     max_value: 110
     step: 1
-    initial_value: 0
+  - platform: template 
+    name: "Water Meter Cal"
+    id: meter_cal
+    web_server:
+      sorting_group_id: sorting_group_usage
+    unit_of_measurement: "%"
+    optimistic: true
+    mode: box
+    min_value: 1
+    max_value: 20
+    step: 0.1 
+    initial_value: 1
+    restore_value: true
     # Simulation components, to be removed after analog level sensors installed
   - platform: template 
     name: "SW Fill Rate"
@@ -744,7 +738,7 @@ number:
     name: "Tide Time Offset"
     id: tide_time_offset
     web_server:
-      sorting_group_id: sorting_group_settime
+      sorting_group_id: sorting_group_config
     unit_of_measurement: "minutes"
     optimistic: true
     mode: box
@@ -816,26 +810,37 @@ button:
             auto time = id(rtc_time).now();
             id(current_time).publish_state(time.strftime("%Y-%m-%d / %H:%M"));
   - platform: template
-    name: "Water Meter"
-    id: water_meter_button
+    name: "Get Day Use"
+    id: get_day_use
     web_server:
-      sorting_group_id: sorting_group_settime
+      sorting_group_id: sorting_group_usage
     on_press:
       then:
         - lambda: !lambda |-
-            int value = 123456;
-            uint8_t write_bytes[4];
-            write_bytes[0] = (value >> 24) & 0xFF; // Get the highest byte
-            write_bytes[1] = (value >> 16) & 0xFF; // Get the second highest byte 
-            write_bytes[2] = (value >> 8) & 0xFF; // Get the second lowest byte
-            write_bytes[3] = value & 0xFF;       
-            //at24c32->put(55, write_bytes, sizeof(write_bytes));
-            uint8_t read_bytes[4];
-            //at24c32->get(55, read_bytes, sizeof(read_bytes));
-            //int value2 = (read_bytes[0] << 24) | (read_bytes[1] << 16) | (read_bytes[2] << 8) | read_bytes[3];
-            id(at24c32write)(10, 654321);
-            int value2 = id(at24c32read)(10);
-            ESP_LOGE("eeprom","Read: %d ", value2);
+            int year = id(dt_year).state;
+            int month = id(dt_month).state;
+            int day = id(dt_day).state;
+            int days = 0;
+            int monthSize[12];
+            if (((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0)) {
+              int monthSize[12] = {31,29,31,30,31,30,31,31,30,31,30,31};
+            } else {
+              int monthSize[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+            }
+            for (int i = 0; i < 12; i++) {
+              if (i == (month - 1) or month == 1) {
+                break; }
+              days = days + monthSize[i];
+              } 
+            int day_use_address = days + day + 64;
+            int usage = id(at24c32read)(day_use_address);
+            id(day_use_count) = usage;
+            id(day_water_use).publish_state(usage);
+ 
+            
+            
+
+
 
 
 
