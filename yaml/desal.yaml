@@ -216,7 +216,7 @@ time:
               }             
               id(at24c32write)(day_address, id(day_use_count)); //back to eeprom
               id(last_day_meter) = id(meter_count);
-              id(day_water_use).publish_state(id(day_use_count));
+              id(day_water_use).publish_state(std::to_string(id(day_use_count)));
       - seconds: 30
         minutes: /1
         then:
@@ -416,34 +416,6 @@ sensor:
       sorting_group_id: sorting_group_tide
     lambda: |-
       return float(id(height)) / 10;    
-    update_interval: 60s
-  - platform: template
-    name: "Hour Water Use"
-    state_class: measurement
-    unit_of_measurement: "L"
-    web_server:
-      sorting_group_id: sorting_group_usage
-    lambda: |-
-      return id(hour_use_count);   
-    update_interval: 60s
-  - platform: template
-    name: "Day Water Use"
-    id: day_water_use
-    state_class: measurement
-    unit_of_measurement: "L"
-    update_interval: never
-    web_server:
-      sorting_group_id: sorting_group_usage
-    lambda: |-
-      return id(day_use_count);
-  - platform: template
-    name: "Water Meter"
-    state_class: measurement
-    unit_of_measurement: "L"
-    web_server:
-      sorting_group_id: sorting_group_usage
-    lambda: |-
-      return id(meter_count);  
     update_interval: 60s
   - platform: pulse_counter
     name: "Flow Counter"
@@ -651,7 +623,6 @@ number:
     id: meter_cal
     web_server:
       sorting_group_id: sorting_group_usage
-    unit_of_measurement: "%"
     optimistic: true
     mode: box
     min_value: 1
@@ -774,6 +745,26 @@ text_sensor:
       sorting_group_id: sorting_group_config
     lambda: |-
       return {"v1.0"};
+  - platform: template
+    name: "Day Water Use"
+    id: day_water_use
+    update_interval: never
+    web_server:
+      sorting_group_id: sorting_group_usage
+    lambda: |-
+      return {std::to_string(id(day_use_count))};
+  - platform: template
+    name: "Hour Water Use"
+    web_server:
+      sorting_group_id: sorting_group_usage
+    lambda: |-
+      return {std::to_string(id(hour_use_count))};
+  - platform: template
+    name: "Water Meter"
+    web_server:
+      sorting_group_id: sorting_group_usage
+    lambda: |-
+      return {std::to_string(id(meter_count))};  
 
 button:
   - platform: template
@@ -835,7 +826,7 @@ button:
             int day_use_address = days + day + 64;
             int usage = id(at24c32read)(day_use_address);
             id(day_use_count) = usage;
-            id(day_water_use).publish_state(usage);
+            id(day_water_use).publish_state(std::to_string(id(day_use_count)));
  
             
             
