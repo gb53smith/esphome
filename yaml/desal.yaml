@@ -122,6 +122,9 @@ globals:
   - id: meter_count
     type: int
     initial_value: "0"
+  - id: begin_time
+    type: int
+    initial_value: "0"
   - id: at24c32write
     type: std::function<int(int, int)>
     initial_value: |-
@@ -164,22 +167,35 @@ globals:
 # calculate dayAddress 10 seconds after midnight when month and day may change.
 # Calculate tide height every minute and compare with min_height to change pump state.
 i2c:
-  sda: GPIO01
-  scl: GPIO02
-  scan: true
-  id: bus_a
+  - id: bus_a
+    sda: GPIO01
+    scl: GPIO02
+    scan: true
+  - id: bus_b
+    sda: GPIO39
+    scl: GPIO40
+    scan: true
+    frequency: 100kHz
+  
 #  frequency: 100kHz
 i2c_eeprom:
   - id: at24c32
     size: 32KB
     address: 0x57
+    i2c_id: bus_a
   - id: ds3231rtc
     size: 1KB
     address: 0x68
+    i2c_id: bus_a
+  - id: espnow
+    size: 1KB
+    address: 0x20
+    i2c_id: bus_b
 
 time:
   - platform: ds1307 
     id: rtc_time
+    i2c_id: bus_a
     timezone: "unknown"
     on_time:
       - seconds: 10
@@ -295,24 +311,23 @@ time:
         then:
           - lambda: |-
               int tmp = 0;
-              int begin_time = 0;
               int min_height = id(min_height_num).state * 10;
               // Start SW pump if tide is up and level is low.  Keep pumping until full
               if (id(height) > min_height) {
                 if (id(sw_level).state < id(sw_refill_level).state and !id(sw_pump).state) {
-                  begin_time = millis();
-                  //ESP_LOGD("main", "Begin: %d %d",begin_time, id(sw_min_on)); 
+                  id(begin_time) = millis();
+                  //ESP_LOGD("main", "Begin: %d %d",id(begin_time), id(sw_min_on)); 
                   id(sw_pump).turn_on();
                 }
                 // Adjust scaling of SW level sensor to allow for some extra filling due to
                 // minimum SW pump ON time algorithm
-                if ((id(sw_level).state >= 100) and id(sw_pump).state and (millis() - begin_time) > id(sw_min_on)) {
+                if ((id(sw_level).state >= 100) and id(sw_pump).state and (millis() - id(begin_time)) > id(sw_min_on)) {
                   id(sw_pump).turn_off();
                 }
               }
               else {
-                if ((id(sw_pump).state) and (millis() - begin_time) >= id(sw_min_on)) {
-                  //ESP_LOGD("main", "End: %d %d",begin_time, millis());
+                if ((id(sw_pump).state) and (millis() - id(begin_time)) >= id(sw_min_on)) {
+                  //ESP_LOGD("main", "End: %d %d",id(begin_time), millis());
                   id(sw_pump).turn_off();
                 }
               }
@@ -829,7 +844,13 @@ button:
             id(day_water_use).publish_state(std::to_string(id(day_use_count)));
  
             
-            
+interval:
+  - interval: 30s
+    then:
+      - lambda: !lambda |-
+          ESP_LOGE("main", "Hello from interval");
+          uint8_t write_bytes[13] = "Hello espnow";
+          espnow->put(0, write_bytes, sizeof(write_bytes));         
 
 
 
