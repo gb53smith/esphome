@@ -849,9 +849,17 @@ interval:
     then:
       - lambda: !lambda |-
           ESP_LOGE("main", "Hello from interval");
-          uint8_t write_bytes[13] = "Hello espnow";
-          espnow->put(0, write_bytes, sizeof(write_bytes));         
-
+          std::string my_string = "{\"swp\":\"on\",\"hpp\":\"off\"}";
+          const char* char_array = my_string.c_str();
+          int length = my_string.length();
+          // Create a dynamic byte array
+          uint8_t* byte_array = new uint8_t[length + 1]; // +1 for null-terminated character
+          strncpy((char*)byte_array, my_string.c_str(), length + 1);
+          //uint8_t write_bytes[13] = "Hello espnow";
+          //espnow->put(0, write_bytes, sizeof(write_bytes));  
+          uint16_t byte_array_size = static_cast<uint16_t>(length + 1);
+          espnow->put(0, byte_array, byte_array_size);
+          delete[] byte_array;  // Deallocate the array to avoid memory leaks
 
 
 
