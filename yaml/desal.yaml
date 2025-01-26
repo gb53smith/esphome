@@ -122,6 +122,9 @@ globals:
   - id: meter_count
     type: int
     initial_value: "0"
+  - id: desal_alarm
+    type: int
+    initial_value: "0"
   - id: begin_time
     type: int
     initial_value: "0"
@@ -376,7 +379,67 @@ time:
               if (id(fw_level).state < id(fw_min_level).state and id(sw_level).state > id(sw_min_level).state * 2) {
                 id(start_desal)->execute(id(hp_start_delay).state * 1000);
               }
-
+      - seconds: 45
+        minutes: /1
+        then:
+          - lambda: |-
+              ESP_LOGE("main", "Hello from remote update packet 1");
+              std::string date_time_str = "\"dt\":\"" + id(current_time).state + "\"";
+              std::string hp_pump_str = "\"hpp\":\"off\",";
+              if (id(hp_pump).state) {
+                hp_pump_str =  "\"hpp\":\"on\",";
+              }
+              std::string sw_pump_str = "\"swp\":\"off\",";
+              if (id(sw_pump).state) {
+                sw_pump_str =  "\"swp\":\"on\",";
+              }
+              std::string tide_height_str = "\"th\":\"" + to_string(id(height)) + "\"," ;
+              std::string tide_direction_str = "\"td\":\"" + to_string(id(rising)) + "\"," ;
+              std::string send_json = "{";
+              send_json.append(hp_pump_str);
+              send_json.append(sw_pump_str);
+              send_json.append(tide_height_str);
+              send_json.append(tide_direction_str);
+              send_json.append(date_time_str + "}");
+              int jlength = send_json.length();
+              ESP_LOGE("main", "Send JSON is %s len: %d", send_json.c_str(), jlength);
+              const char* char_array = send_json.c_str();
+              int length = send_json.length();
+              // Create a dynamic byte array
+              uint8_t* byte_array = new uint8_t[length + 1]; // +1 for null-terminated character
+              strncpy((char*)byte_array, send_json.c_str(), length + 1);
+              uint16_t byte_array_size = static_cast<uint16_t>(length + 1);
+              espnow->put(1, byte_array, byte_array_size);  //Packet number 1
+              delete[] byte_array;  // Deallocate the array to avoid memory leaks
+      - seconds: 50
+        minutes: /1
+        then:
+          - lambda: |-
+              ESP_LOGE("main", "Hello from remote update packet 2");
+              std::string sw_level_str = "\"swl\":\"" +  to_string(int(id(sw_level).state)) + "\",";
+              std::string fw_level_str = "\"fwl\":\"" +  to_string(int(id(fw_level).state)) + "\",";
+              std::string hour_use_count_str = "\"hu\":\"" + to_string(id(hour_use_count)) + "\"," ;
+              std::string day_use_count_str = "\"du\":\"" + to_string(id(day_use_count)) + "\"," ;
+              std::string meter_count_str = "\"mc\":\"" + to_string(id(meter_count)) + "\"," ;
+              std::string desal_alarm_str = "\"am\":\"" + to_string(id(desal_alarm)) + "\"" ;
+              std::string send_json = "{";
+              send_json.append(sw_level_str);
+              send_json.append(fw_level_str);
+              send_json.append(hour_use_count_str);
+              send_json.append(day_use_count_str);
+              send_json.append(meter_count_str);
+              send_json.append(desal_alarm_str + "}");
+              int jlength = send_json.length();
+              ESP_LOGE("main", "Send JSON is %s len: %d", send_json.c_str(), jlength);
+              //std::string my_string = "{\"swp\":\"on\",\"hpp\":\"off\"}";
+              const char* char_array = send_json.c_str();
+              int length = send_json.length();
+              // Create a dynamic byte array
+              uint8_t* byte_array = new uint8_t[length + 1]; // +1 for null-terminated character
+              strncpy((char*)byte_array, send_json.c_str(), length + 1);
+              uint16_t byte_array_size = static_cast<uint16_t>(length + 1);
+              espnow->put(2, byte_array, byte_array_size);  //Packet number 1
+              delete[] byte_array;  // Deallocate the array to avoid memory leaks
 
 script:
   - id: start_desal
@@ -843,23 +906,7 @@ button:
             id(day_use_count) = usage;
             id(day_water_use).publish_state(std::to_string(id(day_use_count)));
  
-            
-interval:
-  - interval: 30s
-    then:
-      - lambda: !lambda |-
-          ESP_LOGE("main", "Hello from interval");
-          std::string my_string = "{\"swp\":\"on\",\"hpp\":\"off\"}";
-          const char* char_array = my_string.c_str();
-          int length = my_string.length();
-          // Create a dynamic byte array
-          uint8_t* byte_array = new uint8_t[length + 1]; // +1 for null-terminated character
-          strncpy((char*)byte_array, my_string.c_str(), length + 1);
-          //uint8_t write_bytes[13] = "Hello espnow";
-          //espnow->put(0, write_bytes, sizeof(write_bytes));  
-          uint16_t byte_array_size = static_cast<uint16_t>(length + 1);
-          espnow->put(0, byte_array, byte_array_size);
-          delete[] byte_array;  // Deallocate the array to avoid memory leaks
+
 
 
 
